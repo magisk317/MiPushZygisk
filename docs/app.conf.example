@@ -1,0 +1,7 @@
+# Enable all processes of a package:
+com.example.app
+
+# Enable only one process:
+com.example.app|com.example.app:push
+
+# System packages and Xiaomi-family packages are ignored.
