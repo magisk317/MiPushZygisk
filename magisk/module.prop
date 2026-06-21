@@ -1,0 +1,7 @@
+id=mipush_zygisk
+name=MiPush Zygisk
+version=v0.1(1)
+versionCode=1
+author=magisk317
+description=Spoof Xiaomi/MIUI device properties for selected app processes via Zygisk
+
