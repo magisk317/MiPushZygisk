@@ -73,7 +73,7 @@ VERSION_CODE="$(git -C "$PROJECT_ROOT" rev-list --count HEAD 2>/dev/null || echo
 if [[ -n "$(git -C "$PROJECT_ROOT" status --porcelain -- . 2>/dev/null || true)" ]]; then
     VERSION_CODE=$((VERSION_CODE + 1))
 fi
-VERSION="v0.1($VERSION_CODE)"
+VERSION="v0.6.1($VERSION_CODE)"
 
 sed -e "s/^version=.*/version=$VERSION/" \
     -e "s/^versionCode=.*/versionCode=$VERSION_CODE/" \
