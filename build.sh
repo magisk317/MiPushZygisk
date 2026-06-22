@@ -83,9 +83,40 @@ mv "$PROJECT_ROOT/magisk/module.prop.tmp" "$PROJECT_ROOT/magisk/module.prop"
 rm -rf "$PROJECT_ROOT/build"
 mkdir -p "$PROJECT_ROOT/build"
 
-pushd "$PROJECT_ROOT/magisk" >/dev/null
-ARTIFACT_NAME="universal_MiPushZygisk_${VERSION}_release.zip"
-zip -r9 "$PROJECT_ROOT/build/$ARTIFACT_NAME" .
-popd >/dev/null
+package_abi() {
+    local abi="$1"
+    local is_universal="$2"
+    
+    local artifact_name
+    if [[ "$is_universal" == "true" ]]; then
+        artifact_name="universal_MiPushZygisk_${VERSION}_release.zip"
+    else
+        artifact_name="${abi}_MiPushZygisk_${VERSION}_release.zip"
+    fi
 
-echo "==> Done: $PROJECT_ROOT/build/$ARTIFACT_NAME"
+    local stage_dir="$PROJECT_ROOT/build/stage_${abi:-universal}"
+    rm -rf "$stage_dir"
+    mkdir -p "$stage_dir"
+    
+    cp -r "$PROJECT_ROOT/magisk/"* "$stage_dir/"
+    
+    if [[ "$is_universal" == "false" ]]; then
+        # Remove all other ABIs from zygisk folder
+        find "$stage_dir/zygisk" -mindepth 1 -maxdepth 1 -type f ! -name "${abi}.so" -delete
+    fi
+    
+    pushd "$stage_dir" >/dev/null
+    zip -r9 "$PROJECT_ROOT/build/$artifact_name" . >/dev/null
+    popd >/dev/null
+    
+    echo "==> Created: $PROJECT_ROOT/build/$artifact_name"
+}
+
+package_abi "universal" "true"
+package_abi "arm64-v8a" "false"
+package_abi "armeabi-v7a" "false"
+package_abi "x86" "false"
+package_abi "x86_64" "false"
+
+# Cleanup staging directories
+rm -rf "$PROJECT_ROOT/build"/stage_*
