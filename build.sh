@@ -84,7 +84,8 @@ rm -rf "$PROJECT_ROOT/build"
 mkdir -p "$PROJECT_ROOT/build"
 
 pushd "$PROJECT_ROOT/magisk" >/dev/null
-zip -r9 "$PROJECT_ROOT/build/mipush-zygisk-$VERSION.zip" .
+ARTIFACT_NAME="universal_MiPushZygisk_${VERSION}_release.zip"
+zip -r9 "$PROJECT_ROOT/build/$ARTIFACT_NAME" .
 popd >/dev/null
 
-echo "==> Done: $PROJECT_ROOT/build/mipush-zygisk-$VERSION.zip"
+echo "==> Done: $PROJECT_ROOT/build/$ARTIFACT_NAME"
