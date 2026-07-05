@@ -19,12 +19,36 @@ stages:
 variables:
   GIT_DEPTH: "0"
   CARGO_HOME: "$CI_PROJECT_DIR/.cargo"
+  RUSTUP_DIST_SERVER: "https://mirrors.tuna.tsinghua.edu.cn/rustup"
+  RUSTUP_UPDATE_ROOT: "https://mirrors.tuna.tsinghua.edu.cn/rustup/rustup"
   ANDROID_NDK_VERSION: "r27d"
   ANDROID_NDK_HOME: "$CI_PROJECT_DIR/.android/android-ndk-r27d"
+
+.configure_debian_tuna: &configure_debian_tuna |
+  sed -i \
+    -e 's#http://deb.debian.org/debian-security#https://mirrors.tuna.tsinghua.edu.cn/debian-security#g' \
+    -e 's#http://security.debian.org/debian-security#https://mirrors.tuna.tsinghua.edu.cn/debian-security#g' \
+    -e 's#http://deb.debian.org/debian#https://mirrors.tuna.tsinghua.edu.cn/debian#g' \
+    /etc/apt/sources.list /etc/apt/sources.list.d/*.sources 2>/dev/null || true
+
+.configure_cargo_tuna: &configure_cargo_tuna |
+  mkdir -p "$CARGO_HOME"
+  cat > "$CARGO_HOME/config.toml" <<'EOF'
+  [source.crates-io]
+  replace-with = "tuna"
+
+  [source.tuna]
+  registry = "sparse+https://mirrors.tuna.tsinghua.edu.cn/crates.io-index/"
+
+  [net]
+  git-fetch-with-cli = true
+  EOF
 
 check:zygisk:
   image: "rust:1-bookworm"
   stage: build
+  before_script:
+    - *configure_cargo_tuna
   cache:
     key: "cargo-check-$CI_COMMIT_REF_SLUG"
     paths:
@@ -55,8 +79,10 @@ build:zygisk:
       - .cargo/git/
       - module/target/
   before_script:
+    - *configure_debian_tuna
     - apt-get update
     - apt-get install -y --no-install-recommends ca-certificates curl git unzip zip
+    - *configure_cargo_tuna
     - rustup target add aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android
     - mkdir -p .android
     - |
