@@ -69,11 +69,36 @@ build_target "x86_64" "x86_64-linux-android"
 
 popd >/dev/null
 
-VERSION_CODE="$(git -C "$PROJECT_ROOT" rev-list --count HEAD 2>/dev/null || echo 1)"
-if [[ -n "$(git -C "$PROJECT_ROOT" status --porcelain -- . 2>/dev/null || true)" ]]; then
-    VERSION_CODE=$((VERSION_CODE + 1))
+read_cargo_version() {
+    sed -nE 's/^version[[:space:]]*=[[:space:]]*"([^"]+)"/\1/p' \
+        "$PROJECT_ROOT/module/Cargo.toml" | head -n1
+}
+
+read_module_prop_value() {
+    local key="$1"
+    sed -nE "s/^${key}=(.*)/\1/p" "$PROJECT_ROOT/magisk/module.prop" | head -n1
+}
+
+VERSION_NAME="${MIPUSH_ZYGISK_VERSION_NAME:-$(read_cargo_version)}"
+if [[ -z "$VERSION_NAME" ]]; then
+    VERSION_NAME="$(read_module_prop_value version | sed -E 's/^v//; s/\([0-9]+\)$//')"
 fi
-VERSION="v0.6.1($VERSION_CODE)"
+if [[ -z "$VERSION_NAME" ]]; then
+    echo "Failed to resolve version name. Set MIPUSH_ZYGISK_VERSION_NAME." >&2
+    exit 1
+fi
+VERSION_NAME="${VERSION_NAME#v}"
+
+VERSION_CODE="${MIPUSH_ZYGISK_VERSION_CODE:-$(read_module_prop_value versionCode)}"
+if [[ -z "$VERSION_CODE" ]]; then
+    VERSION_CODE=1
+fi
+if [[ ! "$VERSION_CODE" =~ ^[0-9]+$ ]]; then
+    echo "Invalid version code: $VERSION_CODE" >&2
+    exit 1
+fi
+
+VERSION="v$VERSION_NAME"
 
 sed -e "s/^version=.*/version=$VERSION/" \
     -e "s/^versionCode=.*/versionCode=$VERSION_CODE/" \
