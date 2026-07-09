@@ -1,4 +1,9 @@
+use std::fs;
+use std::sync::OnceLock;
+
 pub const CONFIG_PATH: &str = "/data/adb/mipush_zygisk/app.conf";
+
+pub const DEVICE_CONFIG_PATH: &str = "/data/adb/mipush_zygisk/device.conf";
 
 pub const XMSF_PACKAGE_NAME: &str = "com.xiaomi.xmsf";
 
@@ -136,15 +141,197 @@ const PACKAGE_PROPS: &[PackageProps] = &[PackageProps {
     build_version_properties: &[],
 }];
 
+/// A group of `key=value` device properties parsed from device.conf, owned so
+/// it can outlive the file read. Split to mirror the three spoof categories.
+#[derive(Default)]
+struct PropSet {
+    system: Vec<(String, String)>,
+    build: Vec<(String, String)>,
+    build_version: Vec<(String, String)>,
+}
+
+impl PropSet {
+    fn is_empty(&self) -> bool {
+        self.system.is_empty() && self.build.is_empty() && self.build_version.is_empty()
+    }
+}
+
+/// Parsed device.conf: a global device plus optional per-package patches.
+struct DeviceConfig {
+    global: PropSet,
+    packages: Vec<(String, PropSet)>,
+}
+
+impl DeviceConfig {
+    fn is_empty(&self) -> bool {
+        self.global.is_empty() && self.packages.iter().all(|(_, set)| set.is_empty())
+    }
+}
+
+/// Which `[section]` the parser is currently filling.
+enum Section {
+    Skip,
+    GlobalSystem,
+    GlobalBuild,
+    GlobalBuildVersion,
+    PackageSystem(usize),
+    PackageBuild(usize),
+    PackageBuildVersion(usize),
+}
+
+/// Load and cache device.conf. Returns `None` when the file is missing,
+/// unreadable, or yields no usable properties so callers fall back to
+/// [`DEFAULT_SPOOF_PROPS`]. Parsed once per process; cached for later hooks.
+fn device_config() -> Option<&'static DeviceConfig> {
+    static CONFIG: OnceLock<Option<DeviceConfig>> = OnceLock::new();
+    CONFIG
+        .get_or_init(|| {
+            let content = fs::read_to_string(DEVICE_CONFIG_PATH).ok()?;
+            let parsed = parse_device_config(&content);
+            if parsed.is_empty() {
+                None
+            } else {
+                Some(parsed)
+            }
+        })
+        .as_ref()
+}
+
+fn parse_device_config(content: &str) -> DeviceConfig {
+    let mut config = DeviceConfig {
+        global: PropSet::default(),
+        packages: Vec::new(),
+    };
+    let mut section = Section::Skip;
+
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+
+        if let Some(header) = line.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+            section = resolve_section(header.trim(), &mut config);
+            continue;
+        }
+
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let key = key.trim();
+        let value = value.trim();
+        if key.is_empty() {
+            continue;
+        }
+
+        let target = match section {
+            Section::Skip => continue,
+            Section::GlobalSystem => &mut config.global.system,
+            Section::GlobalBuild => &mut config.global.build,
+            Section::GlobalBuildVersion => &mut config.global.build_version,
+            Section::PackageSystem(idx) => &mut config.packages[idx].1.system,
+            Section::PackageBuild(idx) => &mut config.packages[idx].1.build,
+            Section::PackageBuildVersion(idx) => &mut config.packages[idx].1.build_version,
+        };
+        upsert(target, key, value);
+    }
+
+    config
+}
+
+/// Map a `[header]` to the section it selects, creating a package entry when
+/// the header uses the `pkg:section` form. Unknown headers are skipped.
+fn resolve_section(header: &str, config: &mut DeviceConfig) -> Section {
+    match header {
+        "system" => return Section::GlobalSystem,
+        "build" => return Section::GlobalBuild,
+        "build.version" => return Section::GlobalBuildVersion,
+        _ => {}
+    }
+
+    let Some((pkg, sub)) = header.rsplit_once(':') else {
+        return Section::Skip;
+    };
+    let pkg = pkg.trim();
+    if pkg.is_empty() {
+        return Section::Skip;
+    }
+    let idx = package_index(config, pkg);
+    match sub.trim() {
+        "system" => Section::PackageSystem(idx),
+        "build" => Section::PackageBuild(idx),
+        "build.version" => Section::PackageBuildVersion(idx),
+        _ => Section::Skip,
+    }
+}
+
+fn package_index(config: &mut DeviceConfig, pkg: &str) -> usize {
+    if let Some(idx) = config.packages.iter().position(|(name, _)| name == pkg) {
+        idx
+    } else {
+        config.packages.push((pkg.to_owned(), PropSet::default()));
+        config.packages.len() - 1
+    }
+}
+
+/// Insert or replace a key, so later lines override earlier ones in a section.
+fn upsert(target: &mut Vec<(String, String)>, key: &str, value: &str) {
+    if let Some(slot) = target.iter_mut().find(|(k, _)| k == key) {
+        slot.1 = value.to_owned();
+    } else {
+        target.push((key.to_owned(), value.to_owned()));
+    }
+}
+
+/// Merge a global section with an optional per-package patch (patch keys win,
+/// global keys are inherited) and leak the result to `'static`. The leak is
+/// bounded: `get_properties_for_package` runs once per app process.
+fn merge_section(
+    global: &'static [(String, String)],
+    patch: Option<&'static [(String, String)]>,
+) -> &'static [(&'static str, &'static str)] {
+    let mut out: Vec<(&'static str, &'static str)> = global
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
+    if let Some(patch) = patch {
+        for (k, v) in patch {
+            if let Some(slot) = out.iter_mut().find(|(ek, _)| *ek == k.as_str()) {
+                slot.1 = v.as_str();
+            } else {
+                out.push((k.as_str(), v.as_str()));
+            }
+        }
+    }
+    Box::leak(out.into_boxed_slice())
+}
+
 pub fn get_properties_for_package(pkg: &str) -> SpoofProps<'static> {
     if let Some(entry) = PACKAGE_PROPS.iter().find(|p| p.package_name == pkg) {
-        SpoofProps {
+        return SpoofProps {
             system_properties: entry.system_properties,
             build_properties: entry.build_properties,
             build_version_properties: entry.build_version_properties,
-        }
-    } else {
-        DEFAULT_SPOOF_PROPS
+        };
+    }
+
+    let Some(config) = device_config() else {
+        return DEFAULT_SPOOF_PROPS;
+    };
+
+    let patch = config
+        .packages
+        .iter()
+        .find(|(name, _)| name == pkg)
+        .map(|(_, set)| set);
+
+    SpoofProps {
+        system_properties: merge_section(&config.global.system, patch.map(|p| p.system.as_slice())),
+        build_properties: merge_section(&config.global.build, patch.map(|p| p.build.as_slice())),
+        build_version_properties: merge_section(
+            &config.global.build_version,
+            patch.map(|p| p.build_version.as_slice()),
+        ),
     }
 }
 
@@ -216,7 +403,108 @@ fn is_process_suffix(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_managed_package, is_valid_process_name};
+    use super::{is_managed_package, is_valid_process_name, parse_device_config};
+
+    fn find<'a>(props: &'a [(String, String)], key: &str) -> Option<&'a str> {
+        props
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.as_str())
+    }
+
+    #[test]
+    fn parses_global_sections_by_category() {
+        let config = parse_device_config(
+            "\
+[system]
+ro.product.model=Redmi K30 5G
+ro.product.brand=Xiaomi
+[build]
+MODEL=Redmi K30 5G
+[build.version]
+RELEASE=12
+",
+        );
+        assert_eq!(
+            find(&config.global.system, "ro.product.model"),
+            Some("Redmi K30 5G")
+        );
+        assert_eq!(
+            find(&config.global.system, "ro.product.brand"),
+            Some("Xiaomi")
+        );
+        assert_eq!(find(&config.global.build, "MODEL"), Some("Redmi K30 5G"));
+        assert_eq!(find(&config.global.build_version, "RELEASE"), Some("12"));
+        assert!(config.packages.is_empty());
+    }
+
+    #[test]
+    fn parses_per_package_patch_sections() {
+        let config = parse_device_config(
+            "\
+[system]
+ro.product.model=Redmi K30 5G
+[com.example.app:system]
+ro.product.model=Pixel 8
+[com.example.app:build]
+MODEL=Pixel 8
+",
+        );
+        assert_eq!(config.packages.len(), 1);
+        let (name, set) = &config.packages[0];
+        assert_eq!(name, "com.example.app");
+        assert_eq!(find(&set.system, "ro.product.model"), Some("Pixel 8"));
+        assert_eq!(find(&set.build, "MODEL"), Some("Pixel 8"));
+        // global stays untouched by the patch
+        assert_eq!(
+            find(&config.global.system, "ro.product.model"),
+            Some("Redmi K30 5G")
+        );
+    }
+
+    #[test]
+    fn ignores_comments_blank_lines_and_unknown_sections() {
+        let config = parse_device_config(
+            "\
+# a comment
+
+[bogus]
+ignored=1
+[system]
+ro.product.model=Redmi K30 5G
+malformed line without equals
+=novalue
+",
+        );
+        assert_eq!(
+            find(&config.global.system, "ro.product.model"),
+            Some("Redmi K30 5G")
+        );
+        assert_eq!(config.global.system.len(), 1);
+        assert!(config.global.build.is_empty());
+    }
+
+    #[test]
+    fn later_duplicate_keys_override_earlier_ones() {
+        let config = parse_device_config(
+            "\
+[system]
+ro.product.model=First
+ro.product.model=Second
+",
+        );
+        assert_eq!(
+            find(&config.global.system, "ro.product.model"),
+            Some("Second")
+        );
+        assert_eq!(config.global.system.len(), 1);
+    }
+
+    #[test]
+    fn empty_content_yields_empty_config() {
+        let config = parse_device_config("# only comments\n\n");
+        assert!(config.is_empty());
+    }
 
     #[test]
     fn rejects_system_and_xiaomi_family_packages() {
