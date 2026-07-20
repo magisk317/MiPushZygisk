@@ -58,7 +58,7 @@ build_target() {
     local abi="$1"
     local target="$2"
     echo "==> Building $abi ($target)"
-    cargo build --release --target "$target"
+    cargo build --locked --release --target "$target"
     cp "target/$target/release/libmipush_zygisk.so" "$PROJECT_ROOT/magisk/zygisk/$abi.so"
 }
 
@@ -121,11 +121,6 @@ if [[ "$BUILD_TYPE" != "debug" && "$BUILD_TYPE" != "release" ]]; then
     exit 1
 fi
 
-sed -e "s/^version=.*/version=$VERSION/" \
-    -e "s/^versionCode=.*/versionCode=$VERSION_CODE/" \
-    "$PROJECT_ROOT/magisk/module.prop" > "$PROJECT_ROOT/magisk/module.prop.tmp"
-mv "$PROJECT_ROOT/magisk/module.prop.tmp" "$PROJECT_ROOT/magisk/module.prop"
-
 rm -rf "$PROJECT_ROOT/build"
 mkdir -p "$PROJECT_ROOT/build"
 
@@ -145,6 +140,10 @@ package_abi() {
     mkdir -p "$stage_dir"
     
     cp -r "$PROJECT_ROOT/magisk/"* "$stage_dir/"
+    sed -e "s/^version=.*/version=$VERSION/" \
+        -e "s/^versionCode=.*/versionCode=$VERSION_CODE/" \
+        "$stage_dir/module.prop" > "$stage_dir/module.prop.tmp"
+    mv "$stage_dir/module.prop.tmp" "$stage_dir/module.prop"
     
     if [[ "$is_universal" == "false" ]]; then
         # Remove all other ABIs from zygisk folder
