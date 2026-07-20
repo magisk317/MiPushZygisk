@@ -115,6 +115,11 @@ if [[ ! "$VERSION_CODE" =~ ^[0-9]+$ ]]; then
 fi
 
 VERSION="v$VERSION_NAME"
+BUILD_TYPE="${MAGISK_BUILD_TYPE:-release}"
+if [[ "$BUILD_TYPE" != "debug" && "$BUILD_TYPE" != "release" ]]; then
+    echo "Invalid MAGISK_BUILD_TYPE: $BUILD_TYPE" >&2
+    exit 1
+fi
 
 sed -e "s/^version=.*/version=$VERSION/" \
     -e "s/^versionCode=.*/versionCode=$VERSION_CODE/" \
@@ -130,9 +135,9 @@ package_abi() {
     
     local artifact_name
     if [[ "$is_universal" == "true" ]]; then
-        artifact_name="universal_MiPushZygisk_${VERSION}_release.zip"
+        artifact_name="universal_MiPushZygisk_${VERSION}_${BUILD_TYPE}.zip"
     else
-        artifact_name="${abi}_MiPushZygisk_${VERSION}_release.zip"
+        artifact_name="${abi}_MiPushZygisk_${VERSION}_${BUILD_TYPE}.zip"
     fi
 
     local stage_dir="$PROJECT_ROOT/build/stage_${abi:-universal}"
