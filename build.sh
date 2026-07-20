@@ -89,6 +89,22 @@ if [[ -z "$VERSION_NAME" ]]; then
 fi
 VERSION_NAME="${VERSION_NAME#v}"
 
+normalize_build_timestamp() {
+    local raw="$1"
+    local compact="${raw//[^0-9]/}"
+    [[ "${#compact}" -eq 14 ]] || return 1
+    printf '%s_%s\n' "${compact:0:8}" "${compact:8:6}"
+}
+
+if [[ -n "${MAGISK_BUILD_TIMESTAMP:-}" ]]; then
+    if BUILD_TIMESTAMP="$(normalize_build_timestamp "$MAGISK_BUILD_TIMESTAMP")"; then
+        VERSION_NAME="${VERSION_NAME}-${BUILD_TIMESTAMP}"
+    else
+        echo "Invalid MAGISK_BUILD_TIMESTAMP: $MAGISK_BUILD_TIMESTAMP" >&2
+        exit 1
+    fi
+fi
+
 VERSION_CODE="${MIPUSH_ZYGISK_VERSION_CODE:-$(read_module_prop_value versionCode)}"
 if [[ -z "$VERSION_CODE" ]]; then
     VERSION_CODE=1
