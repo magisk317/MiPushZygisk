@@ -11,38 +11,57 @@ workflow:
 default:
   interruptible: true
   tags:
-    - magisk-amd64-linux
+    - magisk-arm64-linux
 
 stages:
   - build
+  - package
 
 variables:
   GIT_DEPTH: "0"
   CARGO_HOME: "$CI_PROJECT_DIR/.cargo"
-  RUSTUP_DIST_SERVER: "https://mirrors.tuna.tsinghua.edu.cn/rustup"
-  RUSTUP_UPDATE_ROOT: "https://mirrors.tuna.tsinghua.edu.cn/rustup/rustup"
   ANDROID_NDK_VERSION: "r27d"
   ANDROID_NDK_HOME: "$CI_PROJECT_DIR/.android/android-ndk-r27d"
 
-.configure_debian_tuna: &configure_debian_tuna |
-  sed -i \
-    -e 's#http://deb.debian.org/debian-security#https://mirrors.tuna.tsinghua.edu.cn/debian-security#g' \
-    -e 's#http://security.debian.org/debian-security#https://mirrors.tuna.tsinghua.edu.cn/debian-security#g' \
-    -e 's#http://deb.debian.org/debian#https://mirrors.tuna.tsinghua.edu.cn/debian#g' \
-    /etc/apt/sources.list /etc/apt/sources.list.d/*.sources 2>/dev/null || true
+.configure_debian_sources: &configure_debian_sources |
+  set -euo pipefail
+  use_mirror="${MAGISK_LINUX_USE_MIRROR:-true}"
+  if [[ "$use_mirror" == "true" ]]; then
+    sed -i \
+      -e 's#http://deb.debian.org/debian-security#https://mirrors.tuna.tsinghua.edu.cn/debian-security#g' \
+      -e 's#http://security.debian.org/debian-security#https://mirrors.tuna.tsinghua.edu.cn/debian-security#g' \
+      -e 's#http://deb.debian.org/debian#https://mirrors.tuna.tsinghua.edu.cn/debian#g' \
+      /etc/apt/sources.list /etc/apt/sources.list.d/*.sources 2>/dev/null || true
+  fi
+  if ! apt-get update; then
+    if [[ "$use_mirror" != "true" ]]; then
+      exit 1
+    fi
+    echo "Mirror apt source failed, falling back to official sources" >&2
+    sed -i \
+      -e 's#https://mirrors.tuna.tsinghua.edu.cn/debian-security#http://deb.debian.org/debian-security#g' \
+      -e 's#https://mirrors.tuna.tsinghua.edu.cn/debian#http://deb.debian.org/debian#g' \
+      /etc/apt/sources.list /etc/apt/sources.list.d/*.sources 2>/dev/null || true
+    apt-get update
+  fi
 
-.configure_cargo_tuna: &configure_cargo_tuna |
+.configure_cargo_registry: &configure_cargo_registry |
+  set -euo pipefail
   mkdir -p "$CARGO_HOME"
   cat > "$CARGO_HOME/config.toml" <<'EOF'
-  [source.crates-io]
-  replace-with = "tuna"
-
-  [source.tuna]
-  registry = "sparse+https://mirrors.tuna.tsinghua.edu.cn/crates.io-index/"
-
   [net]
   git-fetch-with-cli = true
   EOF
+  if [[ "${MAGISK_LINUX_USE_MIRROR:-true}" == "true" ]]; then
+    cat >> "$CARGO_HOME/config.toml" <<'EOF'
+
+  [source.crates-io]
+  replace-with = "runner-registry"
+
+  [source.runner-registry]
+  registry = "sparse+https://mirrors.tuna.tsinghua.edu.cn/crates.io-index/"
+  EOF
+  fi
 
 check:zygisk:
   image: "rust:1.97.1-bookworm"
@@ -54,7 +73,7 @@ check:zygisk:
     - if: '$CI_COMMIT_BRANCH'
     - when: never
   before_script:
-    - *configure_cargo_tuna
+    - *configure_cargo_registry
   cache:
     key: "cargo-check-$CI_COMMIT_REF_SLUG"
     paths:
@@ -64,6 +83,13 @@ check:zygisk:
   script:
     - |
       set -euo pipefail
+      if [[ "${MAGISK_LINUX_USE_MIRROR:-true}" == "true" ]]; then
+        export RUSTUP_DIST_SERVER="https://mirrors.tuna.tsinghua.edu.cn/rustup"
+        export RUSTUP_UPDATE_ROOT="https://mirrors.tuna.tsinghua.edu.cn/rustup/rustup"
+      else
+        export RUSTUP_DIST_SERVER="https://static.rust-lang.org"
+        export RUSTUP_UPDATE_ROOT="https://static.rust-lang.org/rustup"
+      fi
       if ! rustup component add rustfmt; then
         echo "Rustup mirror failed, falling back to official server" >&2
         export RUSTUP_DIST_SERVER="https://static.rust-lang.org"
@@ -74,7 +100,7 @@ check:zygisk:
       cargo fmt --check
       cargo check --locked
 
-build:zygisk:
+.build_zygisk:
   image: "rust:1.97.1-bookworm"
   stage: build
   rules:
@@ -90,22 +116,29 @@ build:zygisk:
         MAGISK_BUILD_TIMESTAMP: "$CI_PIPELINE_CREATED_AT"
     - when: never
   cache:
-    key: "cargo-$CI_COMMIT_REF_SLUG"
+    key: "cargo-$MIPUSH_ZYGISK_RUNNER_GROUP-$CI_COMMIT_REF_SLUG"
     paths:
       - .cargo/registry/
       - .cargo/git/
       - module/target/
   before_script:
-    - *configure_debian_tuna
-    - apt-get update
-    - apt-get install -y --no-install-recommends ca-certificates curl git unzip zip
-    - *configure_cargo_tuna
+    - *configure_debian_sources
+    - apt-get install -y --no-install-recommends ca-certificates clang curl git lld unzip zip
+    - *configure_cargo_registry
     - |
-      if ! rustup target add aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android; then
+      set -euo pipefail
+      if [[ "${MAGISK_LINUX_USE_MIRROR:-true}" == "true" ]]; then
+        export RUSTUP_DIST_SERVER="https://mirrors.tuna.tsinghua.edu.cn/rustup"
+        export RUSTUP_UPDATE_ROOT="https://mirrors.tuna.tsinghua.edu.cn/rustup/rustup"
+      else
+        export RUSTUP_DIST_SERVER="https://static.rust-lang.org"
+        export RUSTUP_UPDATE_ROOT="https://static.rust-lang.org/rustup"
+      fi
+      if ! rustup target add $MIPUSH_ZYGISK_RUST_TARGETS; then
         echo "Rustup mirror failed, falling back to official server" >&2
         export RUSTUP_DIST_SERVER="https://static.rust-lang.org"
         export RUSTUP_UPDATE_ROOT="https://static.rust-lang.org/rustup"
-        rustup target add aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android
+        rustup target add $MIPUSH_ZYGISK_RUST_TARGETS
       fi
     - mkdir -p .android
     - |
@@ -123,8 +156,63 @@ build:zygisk:
       fi
     - ./build.sh
   artifacts:
-    name: "MiPushZygisk-$CI_COMMIT_REF_SLUG"
+    name: "MiPushZygisk-$MIPUSH_ZYGISK_RUNNER_GROUP-$CI_COMMIT_REF_SLUG"
     when: always
     expire_in: 14 days
     paths:
       - build/*.zip
+      - magisk/zygisk/*.so
+
+build:zygisk:arm:
+  extends: .build_zygisk
+  tags:
+    - magisk-arm64-linux
+  variables:
+    MIPUSH_ZYGISK_RUNNER_GROUP: "arm"
+    MIPUSH_ZYGISK_BUILD_ABIS: "arm64-v8a armeabi-v7a"
+    MIPUSH_ZYGISK_RUST_TARGETS: "aarch64-linux-android armv7-linux-androideabi"
+    MIPUSH_ZYGISK_PACKAGE_UNIVERSAL: "false"
+
+build:zygisk:x86:
+  extends: .build_zygisk
+  tags:
+    - magisk-amd64-linux
+  variables:
+    MIPUSH_ZYGISK_RUNNER_GROUP: "x86"
+    MIPUSH_ZYGISK_BUILD_ABIS: "x86 x86_64"
+    MIPUSH_ZYGISK_RUST_TARGETS: "i686-linux-android x86_64-linux-android"
+    MIPUSH_ZYGISK_PACKAGE_UNIVERSAL: "false"
+
+package:zygisk:universal:
+  image: "debian:bookworm-slim"
+  stage: package
+  tags:
+    - magisk-arm64-linux
+  rules:
+    - if: '$CI_COMMIT_TAG'
+      variables:
+        MAGISK_BUILD_TYPE: "release"
+        MAGISK_BUILD_TIMESTAMP: ""
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+      when: manual
+      allow_failure: true
+      variables:
+        MAGISK_BUILD_TYPE: "debug"
+        MAGISK_BUILD_TIMESTAMP: "$CI_PIPELINE_CREATED_AT"
+    - when: never
+  needs:
+    - job: build:zygisk:arm
+      artifacts: true
+    - job: build:zygisk:x86
+      artifacts: true
+  before_script:
+    - *configure_debian_sources
+    - apt-get install -y --no-install-recommends zip
+  script:
+    - MIPUSH_ZYGISK_SKIP_BUILD=true MIPUSH_ZYGISK_PACKAGE_UNIVERSAL=true ./build.sh
+  artifacts:
+    name: "MiPushZygisk-universal-$CI_COMMIT_REF_SLUG"
+    when: always
+    expire_in: 14 days
+    paths:
+      - build/universal_*.zip

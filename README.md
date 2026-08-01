@@ -67,7 +67,21 @@ Build:
 ./build.sh
 ```
 
-The zip is written under `build/`.
+The ABI-specific and universal zips are written under `build/`. CI builds the ARM and x86 ABI
+groups on matching runner architectures before creating the universal package.
+
+To reproduce the split CI build manually, build each native runner group without a universal ZIP:
+
+```bash
+MIPUSH_ZYGISK_BUILD_ABIS="arm64-v8a armeabi-v7a" MIPUSH_ZYGISK_PACKAGE_UNIVERSAL=false ./build.sh
+MIPUSH_ZYGISK_BUILD_ABIS="x86 x86_64" MIPUSH_ZYGISK_PACKAGE_UNIVERSAL=false ./build.sh
+```
+
+After collecting all four libraries under `magisk/zygisk/`, package them without rebuilding:
+
+```bash
+MIPUSH_ZYGISK_SKIP_BUILD=true MIPUSH_ZYGISK_PACKAGE_UNIVERSAL=true ./build.sh
+```
 
 ## Install
 
