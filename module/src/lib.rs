@@ -1,7 +1,6 @@
 use android_logger::Config;
 use jni::JNIEnv;
 use log::{debug, error, info, LevelFilter};
-use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 use zygisk_api::{
     api::{v4::ZygiskOption, ZygiskApi, V4},
@@ -12,6 +11,7 @@ use zygisk_api::{
 mod config;
 use config::XMSF_PACKAGE_NAME;
 mod hook;
+mod protocol;
 mod server;
 
 #[derive(Default)]
@@ -108,15 +108,26 @@ fn query_should_hook(api: &mut ZygiskApi<'_, V4>, package_name: &str, process_na
 }
 
 fn send_query(stream: &mut UnixStream, package_name: &str, process_name: &str) -> bool {
-    let payload = format!("{package_name}\n{process_name}\n");
-    if let Err(err) = stream.write_all(payload.as_bytes()) {
+    if let Err(err) = protocol::configure(stream).and_then(|_| {
+        protocol::write_frame(
+            stream,
+            protocol::QUERY,
+            &protocol::encode_query(package_name, process_name),
+        )
+    }) {
         error!("send companion query failed: {err}");
         return false;
     }
-
-    let mut response = [0u8; 1];
-    match stream.read_exact(&mut response) {
-        Ok(_) => response[0] != 0,
+    match protocol::read_frame(stream).and_then(|(kind, payload)| {
+        if kind != protocol::RESPONSE {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "unexpected response",
+            ));
+        }
+        protocol::decode_response(&payload)
+    }) {
+        Ok(result) => result,
         Err(err) => {
             error!("read companion response failed: {err}");
             false

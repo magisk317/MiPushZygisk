@@ -7,6 +7,39 @@ pub const DEVICE_CONFIG_PATH: &str = "/data/adb/mipush_zygisk/device.conf";
 
 pub const XMSF_PACKAGE_NAME: &str = "com.xiaomi.xmsf";
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Profile {
+    Miui14,
+    Hyperos1,
+    LegacyV11,
+}
+
+pub fn profile() -> Profile {
+    let content = fs::read_to_string(CONFIG_PATH).unwrap_or_default();
+    content
+        .lines()
+        .find_map(|line| {
+            let value = line.trim().strip_prefix("profile=")?.trim();
+            Some(match value {
+                "hyperos1" => Profile::Hyperos1,
+                "legacy-v11" => Profile::LegacyV11,
+                _ => Profile::Miui14,
+            })
+        })
+        .unwrap_or(Profile::Miui14)
+}
+
+pub fn observe_enabled() -> bool {
+    fs::read_to_string(CONFIG_PATH)
+        .ok()
+        .and_then(|content| {
+            content
+                .lines()
+                .find_map(|line| line.trim().strip_prefix("observe=")?.parse().ok())
+        })
+        .unwrap_or(false)
+}
+
 #[derive(Clone, Copy)]
 pub struct SpoofProps<'a> {
     pub system_properties: &'a [(&'a str, &'a str)],
@@ -316,7 +349,7 @@ pub fn get_properties_for_package(pkg: &str) -> SpoofProps<'static> {
     }
 
     let Some(config) = device_config() else {
-        return DEFAULT_SPOOF_PROPS;
+        return profile_defaults(profile());
     };
 
     let patch = config
@@ -332,6 +365,40 @@ pub fn get_properties_for_package(pkg: &str) -> SpoofProps<'static> {
             &config.global.build_version,
             patch.map(|p| p.build_version.as_slice()),
         ),
+    }
+}
+
+fn profile_defaults(profile: Profile) -> SpoofProps<'static> {
+    if profile == Profile::Miui14 {
+        return DEFAULT_SPOOF_PROPS;
+    }
+    let mut system = DEFAULT_SPOOF_PROPS.system_properties.to_vec();
+    let mut build = DEFAULT_SPOOF_PROPS.build_properties.to_vec();
+    let mut version = DEFAULT_SPOOF_PROPS.build_version_properties.to_vec();
+    let set = |items: &mut Vec<(&'static str, &'static str)>, key, value| {
+        if let Some(item) = items.iter_mut().find(|(name, _)| *name == key) {
+            item.1 = value;
+        }
+    };
+    match profile {
+        Profile::Hyperos1 => {
+            set(&mut system, "ro.miui.ui.version.name", "V140");
+            set(&mut system, "ro.build.version.release", "14");
+            set(&mut build, "ID", "UP1A.231005.007");
+            set(&mut version, "RELEASE", "14");
+        }
+        Profile::LegacyV11 => {
+            set(&mut system, "ro.miui.ui.version.name", "V110");
+            set(&mut system, "ro.build.version.release", "11");
+            set(&mut build, "ID", "RKQ1.200826.002");
+            set(&mut version, "RELEASE", "11");
+        }
+        Profile::Miui14 => unreachable!(),
+    }
+    SpoofProps {
+        system_properties: Box::leak(system.into_boxed_slice()),
+        build_properties: Box::leak(build.into_boxed_slice()),
+        build_version_properties: Box::leak(version.into_boxed_slice()),
     }
 }
 
