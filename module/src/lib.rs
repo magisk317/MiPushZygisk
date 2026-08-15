@@ -1,5 +1,5 @@
 use android_logger::Config;
-use jni::JNIEnv;
+use jni::{Env, EnvUnowned};
 use log::{debug, error, info, LevelFilter};
 use std::os::unix::net::UnixStream;
 use zygisk_api::{
@@ -23,7 +23,7 @@ impl ZygiskModule for MiPushZygiskModule {
     fn pre_app_specialize<'a>(
         &self,
         mut api: ZygiskApi<'a, V4>,
-        mut env: JNIEnv<'a>,
+        mut env: EnvUnowned<'a>,
         args: &'a mut <V4 as ZygiskRaw<'_>>::AppSpecializeArgs,
     ) {
         android_logger::init_once(
@@ -32,6 +32,7 @@ impl ZygiskModule for MiPushZygiskModule {
                 .with_tag("MiPushZygisk"),
         );
 
+        let raw_env = env.as_raw();
         let process_name = jstring_to_string(&mut env, args.nice_name);
         let app_data_dir = jstring_to_string(&mut env, args.app_data_dir);
         if process_name.is_empty() || app_data_dir.is_empty() {
@@ -42,21 +43,27 @@ impl ZygiskModule for MiPushZygiskModule {
         let package_name = parse_package_name(&app_data_dir);
         debug!("pre_app_specialize pkg={package_name} process={process_name}");
 
-        pre_specialize(api, env, package_name, &process_name);
+        unsafe { EnvUnowned::from_raw(raw_env) }
+            .with_env_no_catch(|env| {
+                pre_specialize(api, env, package_name, &process_name);
+                Ok::<_, jni::errors::Error>(())
+            })
+            .into_outcome();
     }
 
     fn pre_server_specialize<'a>(
         &self,
         mut api: ZygiskApi<'a, V4>,
-        _env: JNIEnv<'a>,
+        _env: EnvUnowned<'a>,
         _args: &'a mut <V4 as ZygiskRaw<'_>>::ServerSpecializeArgs,
     ) {
         api.set_option(ZygiskOption::DlCloseModuleLibrary);
     }
 }
 
-fn jstring_to_string(env: &mut JNIEnv<'_>, jstr: &jni::objects::JString<'_>) -> String {
-    env.get_string(jstr).map(Into::into).unwrap_or_default()
+fn jstring_to_string(env: &mut EnvUnowned<'_>, jstr: &jni::objects::JString<'_>) -> String {
+    env.with_env_no_catch(|env| Ok::<_, jni::errors::Error>(jstr.mutf8_chars(env)?.to_string()))
+        .resolve::<jni::errors::LogErrorAndDefault>()
 }
 
 fn parse_package_name(app_data_dir: &str) -> &str {
@@ -68,7 +75,7 @@ fn parse_package_name(app_data_dir: &str) -> &str {
 
 fn pre_specialize(
     mut api: ZygiskApi<'_, V4>,
-    mut env: JNIEnv<'_>,
+    env: &mut Env<'_>,
     package_name: &str,
     process_name: &str,
 ) {
@@ -81,15 +88,12 @@ fn pre_specialize(
         let props = config::get_properties_for_package(package_name);
 
         if !props.build_properties.is_empty() || !props.build_version_properties.is_empty() {
-            hook::hook_build(
-                &mut env,
-                props.build_properties,
-                props.build_version_properties,
-            );
+            hook::hook_build(env, props.build_properties, props.build_version_properties);
         }
 
         if !props.system_properties.is_empty() {
-            hook::hook_system_properties(&mut api, env, props.system_properties);
+            let unowned = unsafe { EnvUnowned::from_raw(env.get_raw()) };
+            hook::hook_system_properties(&mut api, unowned, props.system_properties);
         }
     } else {
         api.set_option(ZygiskOption::DlCloseModuleLibrary);

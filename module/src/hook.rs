@@ -2,12 +2,41 @@ use std::sync::{Mutex, OnceLock};
 
 use jni::{
     objects::{JClass, JObject, JString, JValue},
-    strings::JNIStr,
+    signature::RuntimeFieldSignature,
+    strings::{JNIStr, JNIString},
     sys::JNINativeMethod,
-    JNIEnv,
+    Env, EnvUnowned,
 };
 use log::debug;
 use zygisk_api::api::{ZygiskApi, V4};
+
+fn with_env<T: Default>(
+    raw: *mut jni::sys::JNIEnv,
+    f: impl FnOnce(&mut Env<'_>) -> jni::errors::Result<T>,
+) -> Option<T> {
+    let mut env = unsafe { EnvUnowned::from_raw(raw) };
+    Some(
+        env.with_env_no_catch(f)
+            .resolve::<jni::errors::LogErrorAndDefault>(),
+    )
+}
+
+fn jstring_to_string(env: &mut EnvUnowned<'_>, raw: jni::sys::jstring) -> String {
+    if raw.is_null() {
+        return String::new();
+    }
+    with_env(env.as_raw(), |env| {
+        let value = unsafe { JString::from_raw(env, raw) };
+        let result = value.mutf8_chars(env)?.to_string();
+        let _ = value.into_raw();
+        Ok(result)
+    })
+    .unwrap_or_default()
+}
+
+fn new_string(env: &mut EnvUnowned<'_>, value: &str) -> Option<jni::sys::jstring> {
+    with_env(env.as_raw(), |env| Ok(env.new_string(value)?.into_raw()))
+}
 
 type NativeGetFn = unsafe extern "C" fn(
     *mut jni::sys::JNIEnv,
@@ -82,25 +111,12 @@ unsafe extern "C" fn my_native_get(
     key_j: jni::sys::jstring,
     def_j: jni::sys::jstring,
 ) -> jni::sys::jstring {
-    let mut jni_env = match JNIEnv::from_raw(env) {
-        Ok(env) => env,
-        Err(_) => return def_j,
-    };
+    let mut jni_env = unsafe { EnvUnowned::from_raw(env) };
 
-    let key: String = if key_j.is_null() {
-        String::new()
-    } else {
-        let raw = JString::from_raw(key_j);
-        let key = jni_env.get_string(&raw).map(Into::into).unwrap_or_default();
-        let _ = raw.into_raw();
-        key
-    };
+    let key = jstring_to_string(&mut jni_env, key_j);
 
     if let Some(value) = spoofed_value(&key) {
-        return match jni_env.new_string(value) {
-            Ok(result) => result.into_raw(),
-            Err(_) => def_j,
-        };
+        return new_string(&mut jni_env, value).unwrap_or(def_j);
     }
 
     match ORIG_NATIVE_GET.get() {
@@ -161,10 +177,8 @@ unsafe fn lookup_spoofed_value(
     if key_j.is_null() {
         return None;
     }
-    let mut jni_env = JNIEnv::from_raw(env).ok()?;
-    let raw = JString::from_raw(key_j);
-    let key: String = jni_env.get_string(&raw).map(Into::into).unwrap_or_default();
-    let _ = raw.into_raw();
+    let mut jni_env = unsafe { EnvUnowned::from_raw(env) };
+    let key = jstring_to_string(&mut jni_env, key_j);
     spoofed_value(&key)
 }
 
@@ -192,10 +206,11 @@ fn parse_bool(value: &str) -> Option<bool> {
     }
 }
 
-pub fn hook_build(env: &mut JNIEnv<'_>, props: &[(&str, &str)], version_props: &[(&str, &str)]) {
+pub fn hook_build(env: &mut Env<'_>, props: &[(&str, &str)], version_props: &[(&str, &str)]) {
     debug!("hook android.os.Build");
 
-    let build_class = match env.find_class("android/os/Build") {
+    let build_class_name = JNIString::new("android/os/Build");
+    let build_class = match env.find_class(&build_class_name) {
         Ok(class) => class,
         Err(err) => {
             debug!("find android.os.Build failed: {err:?}");
@@ -210,7 +225,8 @@ pub fn hook_build(env: &mut JNIEnv<'_>, props: &[(&str, &str)], version_props: &
     if version_props.is_empty() {
         return;
     }
-    let version_class = match env.find_class("android/os/Build$VERSION") {
+    let version_class_name = JNIString::new("android/os/Build$VERSION");
+    let version_class = match env.find_class(&version_class_name) {
         Ok(class) => class,
         Err(err) => {
             debug!("find android.os.Build.VERSION failed: {err:?}");
@@ -222,15 +238,7 @@ pub fn hook_build(env: &mut JNIEnv<'_>, props: &[(&str, &str)], version_props: &
     }
 }
 
-fn set_static_string_field(env: &mut JNIEnv<'_>, class: &JClass<'_>, field: &str, value: &str) {
-    let field_id = match env.get_static_field_id(class, field, "Ljava/lang/String;") {
-        Ok(id) => id,
-        Err(err) => {
-            debug!("get Build.{field} failed: {err:?}");
-            return;
-        }
-    };
-
+fn set_static_string_field(env: &mut Env<'_>, class: &JClass<'_>, field: &str, value: &str) {
     let value = match env.new_string(value) {
         Ok(value) => value,
         Err(err) => {
@@ -240,14 +248,24 @@ fn set_static_string_field(env: &mut JNIEnv<'_>, class: &JClass<'_>, field: &str
     };
     let object = JObject::from(value);
 
-    if let Err(err) = env.set_static_field(class, field_id, JValue::Object(&object)) {
+    let field_name = JNIString::new(field);
+    let Ok(field_signature) = RuntimeFieldSignature::from_str("Ljava/lang/String;") else {
+        debug!("parse Build.{field} signature failed");
+        return;
+    };
+    if let Err(err) = env.set_static_field(
+        class,
+        &field_name,
+        field_signature.field_signature(),
+        JValue::Object(&object),
+    ) {
         debug!("set Build.{field} failed: {err:?}");
     }
 }
 
 pub fn hook_system_properties(
     api: &mut ZygiskApi<'_, V4>,
-    env: JNIEnv<'_>,
+    env: EnvUnowned<'_>,
     props: &'static [(&'static str, &'static str)],
 ) {
     debug!("hook android.os.SystemProperties native getters");
@@ -343,16 +361,11 @@ unsafe extern "C" fn my_native_find(
     clazz: jni::sys::jclass,
     key_j: jni::sys::jstring,
 ) -> jni::sys::jlong {
-    let mut jni_env = match JNIEnv::from_raw(env) {
-        Ok(env) => env,
-        Err(_) => return 0,
-    };
+    let mut jni_env = unsafe { EnvUnowned::from_raw(env) };
     if key_j.is_null() {
         return 0;
     }
-    let raw = JString::from_raw(key_j);
-    let key: String = jni_env.get_string(&raw).map(Into::into).unwrap_or_default();
-    let _ = raw.into_raw();
+    let key = jstring_to_string(&mut jni_env, key_j);
     let Some(value) = spoofed_value(&key) else {
         return ORIG_NATIVE_FIND
             .get()
@@ -382,10 +395,9 @@ unsafe extern "C" fn my_native_get_handle(
         if let Some(handles) = HANDLES.get() {
             if let Ok(handles) = handles.lock() {
                 if let Some(value) = handles.get((handle - 1) as usize) {
-                    if let Ok(jni_env) = JNIEnv::from_raw(env) {
-                        if let Ok(result) = jni_env.new_string(value) {
-                            return result.into_raw();
-                        }
+                    let mut jni_env = unsafe { EnvUnowned::from_raw(env) };
+                    if let Some(result) = new_string(&mut jni_env, value) {
+                        return result;
                     }
                 }
             }
@@ -402,23 +414,10 @@ unsafe extern "C" fn my_native_get_one(
     clazz: jni::sys::jclass,
     key_j: jni::sys::jstring,
 ) -> jni::sys::jstring {
-    let mut jni_env = match JNIEnv::from_raw(env) {
-        Ok(env) => env,
-        Err(_) => return std::ptr::null_mut(),
-    };
-    let key = if key_j.is_null() {
-        String::new()
-    } else {
-        let raw = JString::from_raw(key_j);
-        let value = jni_env.get_string(&raw).map(Into::into).unwrap_or_default();
-        let _ = raw.into_raw();
-        value
-    };
+    let mut jni_env = unsafe { EnvUnowned::from_raw(env) };
+    let key = jstring_to_string(&mut jni_env, key_j);
     if let Some(value) = spoofed_value(&key) {
-        return jni_env
-            .new_string(value)
-            .map(|value| value.into_raw())
-            .unwrap_or(std::ptr::null_mut());
+        return new_string(&mut jni_env, value).unwrap_or(std::ptr::null_mut());
     }
     match ORIG_NATIVE_GET_ONE.get() {
         Some(orig) => orig(env, clazz, key_j),

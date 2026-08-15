@@ -10,9 +10,9 @@ crate-type = ["cdylib"]
 
 [dependencies]
 android_logger = "0.15"
-jni = "0.21"
+jni = "0.22"
 log = "0.4"
-zygisk-api = { git = "https://gitlab.com/magisk3171/zygisk-api-rs", rev = "81c1442b034018cd9e256c4bb831d8fbae9c345d" }
+zygisk-api = { git = "https://gitlab.com/magisk3171/zygisk-api-rs", rev = "3aadc92" }
 
 [profile.release]
 opt-level = "z"

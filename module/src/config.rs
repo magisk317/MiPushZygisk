@@ -324,14 +324,12 @@ fn merge_section(
     patch: Option<&'static [(String, String)]>,
 ) -> &'static [(&'static str, &'static str)] {
     let mut out = base.to_vec();
-    for overrides in [Some(global), patch] {
-        if let Some(overrides) = overrides {
-            for (k, v) in overrides {
-                if let Some(slot) = out.iter_mut().find(|(ek, _)| *ek == k.as_str()) {
-                    slot.1 = v.as_str();
-                } else {
-                    out.push((k.as_str(), v.as_str()));
-                }
+    for overrides in [Some(global), patch].into_iter().flatten() {
+        for (k, v) in overrides {
+            if let Some(slot) = out.iter_mut().find(|(ek, _)| *ek == k.as_str()) {
+                slot.1 = v.as_str();
+            } else {
+                out.push((k.as_str(), v.as_str()));
             }
         }
     }
