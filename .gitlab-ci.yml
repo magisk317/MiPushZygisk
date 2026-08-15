@@ -184,7 +184,7 @@ build:zygisk:x86:
     MIPUSH_ZYGISK_PACKAGE_UNIVERSAL: "false"
 
 package:zygisk:universal:
-  image: "debian:bookworm-slim"
+  image: "debian:trixie-slim"
   stage: package
   tags:
     - magisk-arm64-linux
