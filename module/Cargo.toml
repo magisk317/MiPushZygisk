@@ -9,10 +9,10 @@ name = "mipush_zygisk"
 crate-type = ["cdylib"]
 
 [dependencies]
-android_logger = "0.14"
+android_logger = "0.15"
 jni = "0.21"
 log = "0.4"
-zygisk-api = { git = "https://github.com/rmnscnce/zygisk-api-rs" }
+zygisk-api = { git = "https://gitlab.com/magisk3171/zygisk-api-rs", rev = "f945a2003f0dc63c4b3a4773b6ca3df834cdeb2f" }
 
 [profile.release]
 opt-level = "z"
