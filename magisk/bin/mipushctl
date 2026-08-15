@@ -2,11 +2,15 @@
 
 CONFIG_DIR=/data/adb/mipush_zygisk
 CONFIG=$CONFIG_DIR/app.conf
-MAX_SCAN=256
+MAX_SCAN=512
 
 die() { echo "mipushctl: $*" >&2; exit 1; }
 ensure() { [ -f "$CONFIG" ] || die "configuration is missing: $CONFIG"; }
-valid_pkg() { echo "$1" | grep -Eq '^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$'; }
+valid_pkg() {
+    # Keep CLI validation limited to package syntax; native Zygisk accepts
+    # explicitly configured vendor packages as well.
+    echo "$1" | grep -Eq '^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$'
+}
 
 set_meta() {
     key=$1 value=$2 tmp=$CONFIG_DIR/app.conf.tmp.$$
@@ -19,7 +23,9 @@ set_meta() {
 rule() {
     prefix=$1 entry=$2
     ensure
-    grep -v -F -x "$prefix$entry" "$CONFIG" > "$CONFIG_DIR/app.conf.tmp.$$" || true
+    # Replace both forms so enabling a package also removes an older deny rule.
+    awk -v entry="$entry" '$0 != entry && $0 != "-" entry {print}' \
+        "$CONFIG" > "$CONFIG_DIR/app.conf.tmp.$$"
     printf '%s%s\n' "$prefix" "$entry" >> "$CONFIG_DIR/app.conf.tmp.$$"
     chmod 600 "$CONFIG_DIR/app.conf.tmp.$$" && mv "$CONFIG_DIR/app.conf.tmp.$$" "$CONFIG"
 }
@@ -28,11 +34,12 @@ scan() {
     ensure
     command -v dumpsys >/dev/null 2>&1 || die "dumpsys unavailable"
     count=0
-    pm list packages 2>/dev/null | sed 's/^package://' | while read -r pkg; do
+    # Keep the loop in this shell; a piped while loop runs in a child shell on
+    # Android and would make MAX_SCAN ineffective.
+    for pkg in $(pm list packages 2>/dev/null | sed 's/^package://'); do
         [ "$count" -lt "$MAX_SCAN" ] || break
         valid_pkg "$pkg" || continue
-        case "$pkg" in android|android.*|com.android.*|com.google.android.*|com.mi.*|com.miui.*|com.xiaomi.*|miui.*) continue;; esac
-        if dumpsys package "$pkg" 2>/dev/null | grep -q 'com.xiaomi.push.service\|XMPushService'; then
+        if dumpsys package "$pkg" 2>/dev/null | grep -Eq 'com.xiaomi.push.service|XMPushService'; then
             echo "$pkg"
         fi
         count=$((count + 1))
@@ -44,9 +51,8 @@ case "${1:-}" in
     app|app-status) pkg=${2:-}; valid_pkg "$pkg" || die "invalid package"; grep -F -x "$pkg" "$CONFIG" >/dev/null && echo enabled || echo disabled;;
     enable) pkg=${2:-}; valid_pkg "$pkg" || die "invalid package"; rule '' "$pkg"; echo "enabled $pkg";;
     disable) pkg=${2:-}; valid_pkg "$pkg" || die "invalid package"; rule '-' "$pkg"; echo "denied $pkg";;
-    auto) set_meta auto_scan "${2:-true}"; echo "auto_scan=${2:-true}";;
     profile) case "${2:-}" in miui14|hyperos1|legacy-v11) set_meta profile "$2"; echo "profile=$2";; *) echo "miui14 hyperos1 legacy-v11"; exit 1;; esac;;
     observe) set_meta observe "${2:-true}"; echo "observe=${2:-true}";;
     scan) scan;;
-    *) echo "usage: mipushctl {list|apps|app PKG|enable PKG|disable PKG|auto [true|false]|profile [miui14|hyperos1|legacy-v11]|observe [true|false]|scan}" >&2; exit 2;;
+    *) echo "usage: mipushctl {list|apps|app PKG|enable PKG|disable PKG|profile [miui14|hyperos1|legacy-v11]|observe [true|false]|scan}" >&2; exit 2;;
 esac

@@ -158,13 +158,13 @@ mod tests {
     }
 
     #[test]
-    fn system_and_xiaomi_family_lines_never_match() {
-        assert!(!matches_line(
+    fn syntactically_valid_vendor_lines_match() {
+        assert!(matches_line(
             "com.xiaomi.smarthome",
             "com.xiaomi.smarthome",
             "com.xiaomi.smarthome"
         ));
-        assert!(!matches_line(
+        assert!(matches_line(
             "com.android.settings",
             "com.android.settings",
             "com.android.settings"

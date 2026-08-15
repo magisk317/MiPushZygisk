@@ -4,7 +4,6 @@ com.example.app
 # Optional settings:
 profile=miui14
 observe=false
-auto_scan=false
 
 # Enable only one process:
 com.example.app|com.example.app:push
