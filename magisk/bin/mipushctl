@@ -51,8 +51,8 @@ case "${1:-}" in
     app|app-status) pkg=${2:-}; valid_pkg "$pkg" || die "invalid package"; grep -F -x "$pkg" "$CONFIG" >/dev/null && echo enabled || echo disabled;;
     enable) pkg=${2:-}; valid_pkg "$pkg" || die "invalid package"; rule '' "$pkg"; echo "enabled $pkg";;
     disable) pkg=${2:-}; valid_pkg "$pkg" || die "invalid package"; rule '-' "$pkg"; echo "denied $pkg";;
-    profile) case "${2:-}" in miui14|hyperos1|legacy-v11) set_meta profile "$2"; echo "profile=$2";; *) echo "miui14 hyperos1 legacy-v11"; exit 1;; esac;;
+    profile) case "${2:-}" in miui14|os4) set_meta profile "$2"; echo "profile=$2";; *) echo "miui14 os4"; exit 1;; esac;;
     observe) set_meta observe "${2:-true}"; echo "observe=${2:-true}";;
     scan) scan;;
-    *) echo "usage: mipushctl {list|apps|app PKG|enable PKG|disable PKG|profile [miui14|hyperos1|legacy-v11]|observe [true|false]|scan}" >&2; exit 2;;
+    *) echo "usage: mipushctl {list|apps|app PKG|enable PKG|disable PKG|profile [miui14|os4]|observe [true|false]|scan}" >&2; exit 2;;
 esac

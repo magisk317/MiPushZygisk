@@ -62,7 +62,9 @@ com.example.app|com.example.app:push
 ```
 
 Blank lines and lines starting with `#` are ignored.
-System packages and Xiaomi-family packages are ignored so this config matches MiPushFramework's managed-app model.
+Package rules are syntax-based: explicitly configured vendor and system packages such as
+`com.xiaomi.smarthome` and `com.android.settings` are accepted. Only the exact `android` package
+and malformed package names are ignored.
 
 A default config is provided with common apps that use MiPush.
 

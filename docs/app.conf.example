@@ -8,4 +8,5 @@ observe=false
 # Enable only one process:
 com.example.app|com.example.app:push
 
-# System packages and Xiaomi-family packages are ignored.
+# Syntactically valid vendor and system packages can be configured explicitly.
+# Only the exact android package and malformed package names are ignored.

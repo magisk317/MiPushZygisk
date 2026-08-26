@@ -96,8 +96,10 @@ check:zygisk:
         export RUSTUP_UPDATE_ROOT="https://static.rust-lang.org/rustup"
         rustup component add rustfmt
       fi
+      ./scripts/test_mipushctl.sh
       cd module
       cargo fmt --check
+      cargo test --locked
       cargo check --locked
 
 .build_zygisk:
