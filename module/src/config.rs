@@ -7,6 +7,37 @@ pub const DEVICE_CONFIG_PATH: &str = "/data/adb/mipush_zygisk/device.conf";
 
 pub const XMSF_PACKAGE_NAME: &str = "com.xiaomi.xmsf";
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Profile {
+    Miui14,
+    Os4,
+}
+
+pub fn profile() -> Profile {
+    let content = fs::read_to_string(CONFIG_PATH).unwrap_or_default();
+    content
+        .lines()
+        .find_map(|line| {
+            let value = line.trim().strip_prefix("profile=")?.trim();
+            Some(match value {
+                "os4" => Profile::Os4,
+                _ => Profile::Miui14,
+            })
+        })
+        .unwrap_or(Profile::Miui14)
+}
+
+pub fn observe_enabled() -> bool {
+    fs::read_to_string(CONFIG_PATH)
+        .ok()
+        .and_then(|content| {
+            content
+                .lines()
+                .find_map(|line| line.trim().strip_prefix("observe=")?.parse().ok())
+        })
+        .unwrap_or(false)
+}
+
 #[derive(Clone, Copy)]
 pub struct SpoofProps<'a> {
     pub system_properties: &'a [(&'a str, &'a str)],
@@ -156,7 +187,8 @@ impl PropSet {
     }
 }
 
-/// Parsed device.conf: a global device plus optional per-package patches.
+/// Parsed device.conf: explicit overrides on top of the selected profile plus
+/// optional per-package patches.
 struct DeviceConfig {
     global: PropSet,
     packages: Vec<(String, PropSet)>,
@@ -181,7 +213,7 @@ enum Section {
 
 /// Load and cache device.conf. Returns `None` when the file is missing,
 /// unreadable, or yields no usable properties so callers fall back to
-/// [`DEFAULT_SPOOF_PROPS`]. Parsed once per process; cached for later hooks.
+/// the selected profile. Parsed once per process; cached for later hooks.
 fn device_config() -> Option<&'static DeviceConfig> {
     static CONFIG: OnceLock<Option<DeviceConfig>> = OnceLock::new();
     CONFIG
@@ -287,15 +319,13 @@ fn upsert(target: &mut Vec<(String, String)>, key: &str, value: &str) {
 /// global keys are inherited) and leak the result to `'static`. The leak is
 /// bounded: `get_properties_for_package` runs once per app process.
 fn merge_section(
+    base: &'static [(&'static str, &'static str)],
     global: &'static [(String, String)],
     patch: Option<&'static [(String, String)]>,
 ) -> &'static [(&'static str, &'static str)] {
-    let mut out: Vec<(&'static str, &'static str)> = global
-        .iter()
-        .map(|(k, v)| (k.as_str(), v.as_str()))
-        .collect();
-    if let Some(patch) = patch {
-        for (k, v) in patch {
+    let mut out = base.to_vec();
+    for overrides in [Some(global), patch].into_iter().flatten() {
+        for (k, v) in overrides {
             if let Some(slot) = out.iter_mut().find(|(ek, _)| *ek == k.as_str()) {
                 slot.1 = v.as_str();
             } else {
@@ -315,8 +345,9 @@ pub fn get_properties_for_package(pkg: &str) -> SpoofProps<'static> {
         };
     }
 
+    let base = profile_defaults(profile());
     let Some(config) = device_config() else {
-        return DEFAULT_SPOOF_PROPS;
+        return base;
     };
 
     let patch = config
@@ -326,34 +357,108 @@ pub fn get_properties_for_package(pkg: &str) -> SpoofProps<'static> {
         .map(|(_, set)| set);
 
     SpoofProps {
-        system_properties: merge_section(&config.global.system, patch.map(|p| p.system.as_slice())),
-        build_properties: merge_section(&config.global.build, patch.map(|p| p.build.as_slice())),
+        system_properties: merge_section(
+            base.system_properties,
+            &config.global.system,
+            patch.map(|p| p.system.as_slice()),
+        ),
+        build_properties: merge_section(
+            base.build_properties,
+            &config.global.build,
+            patch.map(|p| p.build.as_slice()),
+        ),
         build_version_properties: merge_section(
+            base.build_version_properties,
             &config.global.build_version,
             patch.map(|p| p.build_version.as_slice()),
         ),
     }
 }
 
+fn profile_defaults(profile: Profile) -> SpoofProps<'static> {
+    if profile == Profile::Miui14 {
+        return DEFAULT_SPOOF_PROPS;
+    }
+    let mut system = DEFAULT_SPOOF_PROPS.system_properties.to_vec();
+    let mut build = DEFAULT_SPOOF_PROPS.build_properties.to_vec();
+    let mut version = DEFAULT_SPOOF_PROPS.build_version_properties.to_vec();
+    let set = |items: &mut Vec<(&'static str, &'static str)>, key, value| {
+        if let Some(item) = items.iter_mut().find(|(name, _)| *name == key) {
+            item.1 = value;
+        } else {
+            items.push((key, value));
+        }
+    };
+    match profile {
+        Profile::Os4 => {
+            set(&mut system, "ro.product.model", "25113PN0EC");
+            set(&mut system, "ro.product.device", "pudding");
+            set(&mut system, "ro.product.name", "pudding");
+            set(&mut system, "ro.product.board", "canoe");
+            set(&mut system, "ro.product.marketname", "Xiaomi 17");
+            set(&mut system, "ro.product.cpu.abi2", "");
+            set(&mut system, "ro.product.cpu.abilist", "arm64-v8a");
+            set(&mut system, "ro.product.cpu.abilist32", "");
+            set(&mut system, "ro.miui.ui.version.name", "V816");
+            set(&mut system, "ro.miui.ui.version.code", "816");
+            set(&mut system, "ro.miui.version.code_time", "");
+            set(&mut system, "ro.miui.cust_device", "pudding");
+            set(&mut system, "ro.miui.cust_variant", "cn_chinatelecom");
+            set(&mut system, "ro.miui.cust_hardware", "V1");
+            set(&mut system, "ro.product.mod_device", "pudding");
+            set(&mut system, "ro.build.display.id", "CP2A.260605.016");
+            set(&mut system, "ro.build.id", "CP2A.260605.016");
+            set(
+                &mut system,
+                "ro.build.version.incremental",
+                "OS4.0.0.9.XPCCNXM",
+            );
+            set(&mut system, "ro.build.version.release", "17");
+            set(&mut system, "ro.build.version.sdk", "37");
+            set(&mut system, "ro.build.version.security_patch", "2026-08-01");
+            set(
+                &mut system,
+                "ro.build.description",
+                "pudding-user 17 CP2A.260605.016 OS4.0.0.9.XPCCNXM release-keys",
+            );
+            set(&mut system, "ro.build.product", "pudding");
+            set(
+                &mut system,
+                "ro.build.fingerprint",
+                "Xiaomi/pudding/pudding:17/CP2A.260605.016/OS4.0.0.9.XPCCNXM:user/release-keys",
+            );
+            set(&mut build, "BOARD", "canoe");
+            set(&mut build, "MODEL", "25113PN0EC");
+            set(&mut build, "DEVICE", "pudding");
+            set(&mut build, "PRODUCT", "pudding");
+            set(&mut build, "DISPLAY", "CP2A.260605.016");
+            set(&mut build, "CPU_ABI2", "");
+            set(
+                &mut build,
+                "FINGERPRINT",
+                "Xiaomi/pudding/pudding:17/CP2A.260605.016/OS4.0.0.9.XPCCNXM:user/release-keys",
+            );
+            set(&mut build, "ID", "CP2A.260605.016");
+            set(&mut version, "INCREMENTAL", "OS4.0.0.9.XPCCNXM");
+            set(&mut version, "RELEASE", "17");
+            set(&mut version, "SDK", "37");
+            set(&mut version, "SECURITY_PATCH", "2026-08-01");
+        }
+        Profile::Miui14 => unreachable!(),
+    }
+    SpoofProps {
+        system_properties: Box::leak(system.into_boxed_slice()),
+        build_properties: Box::leak(build.into_boxed_slice()),
+        build_version_properties: Box::leak(version.into_boxed_slice()),
+    }
+}
+
 pub fn is_managed_package(package_name: &str) -> bool {
     let package_name = package_name.trim();
-    if package_name == "android" || !is_android_package_name(package_name) {
-        return false;
-    }
-    let denied_prefixes = [
-        "android.",
-        "com.android.",
-        "com.google.android.",
-        "com.mi.",
-        "com.miui.",
-        "com.milink.",
-        "com.mipay.",
-        "com.xiaomi.",
-        "miui.",
-    ];
-    !denied_prefixes
-        .iter()
-        .any(|prefix| package_name.starts_with(prefix))
+    // Package filtering is an explicit caller policy. Native Zygisk only
+    // validates the identity syntax so Xiaomi and other vendor packages remain
+    // configurable when the user intentionally includes them.
+    package_name != "android" && is_android_package_name(package_name)
 }
 
 pub fn is_valid_process_name(package_name: &str, process_name: &str) -> bool {
@@ -507,12 +612,12 @@ ro.product.model=Second
     }
 
     #[test]
-    fn rejects_system_and_xiaomi_family_packages() {
+    fn validates_package_identity_without_vendor_blacklist() {
         assert!(!is_managed_package("android"));
-        assert!(!is_managed_package("com.android.settings"));
-        assert!(!is_managed_package("com.miui.securitycenter"));
-        assert!(!is_managed_package("com.xiaomi.smarthome"));
-        assert!(!is_managed_package("com.mipay.wallet"));
+        assert!(is_managed_package("com.android.settings"));
+        assert!(is_managed_package("com.miui.securitycenter"));
+        assert!(is_managed_package("com.xiaomi.smarthome"));
+        assert!(is_managed_package("com.mipay.wallet"));
         assert!(is_managed_package("com.example.app"));
     }
 

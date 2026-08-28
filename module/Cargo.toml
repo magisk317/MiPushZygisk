@@ -1,6 +1,6 @@
 [package]
 name = "mipush_zygisk"
-version = "0.6.3"
+version = "1.0.1"
 edition = "2021"
 license = "GPL-3.0-only"
 
@@ -9,10 +9,10 @@ name = "mipush_zygisk"
 crate-type = ["cdylib"]
 
 [dependencies]
-android_logger = "0.14"
-jni = "0.21"
+android_logger = "0.15"
+jni = "0.22"
 log = "0.4"
-zygisk-api = { git = "https://github.com/rmnscnce/zygisk-api-rs" }
+zygisk-api = { git = "https://gitlab.com/magisk3171/zygisk-api-rs", rev = "3aadc92" }
 
 [profile.release]
 opt-level = "z"
