@@ -236,7 +236,12 @@ package_abi() {
     rm -rf "$stage_dir"
     mkdir -p "$stage_dir"
 
-    cp -r "$PROJECT_ROOT/magisk/"* "$stage_dir/"
+    # Preserve dotfiles such as system/.../.replace in the module payload.
+    cp -a "$PROJECT_ROOT/magisk/." "$stage_dir/"
+    # KernelSU treats a root-level install.sh as a legacy installer and skips
+    # its standard customize.sh/REPLACE flow. Keep this installer available to
+    # the custom Magisk update-binary under a manager-specific name instead.
+    mv "$stage_dir/install.sh" "$stage_dir/magisk-install.sh"
     sed -e "s/^version=.*/version=$VERSION/" \
         -e "s/^versionCode=.*/versionCode=$VERSION_CODE/" \
         "$stage_dir/module.prop" > "$stage_dir/module.prop.tmp"

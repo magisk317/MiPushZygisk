@@ -29,6 +29,19 @@ When installed alongside MiPushFramework:
 - The module sets `mipush.zygisk.enabled=true` system property
 - MiPushFramework can detect this property to show Zygisk status in its UI
 - The config file at `/data/adb/mipush_zygisk/app.conf` controls which apps get spoofed
+- On the first install, MiPushCut hides the stock XMSF only when
+  `/product/app/split-XiaomiServiceFrameworkCN` exists and contains an APK
+- The stock XMSF replacement is an empty `.replace` directory; install the
+  MiPushFramework `com.xiaomi.xmsf` APK normally after reboot rather than
+  copying it into `/product`
+- Updates keep the previous MiPushCut decision in
+  `/data/adb/mipush_zygisk/mipushcut.state`, so a temporarily hidden stock path
+  does not disable an already active replacement
+- The first update from a pre-state release migrates the decision from its
+  existing module `.replace` marker before the old module directory is replaced
+- On KernelSU, an active metamodule is required for MiPushCut. If stock XMSF is
+  detected without one, installation stops with instructions to install
+  `meta-overlayfs` (or another compatible metamodule) and retry
 
 ## Config
 
@@ -90,6 +103,13 @@ MIPUSH_ZYGISK_SKIP_BUILD=true MIPUSH_ZYGISK_PACKAGE_UNIVERSAL=true ./build.sh
 3. Go to Modules → Install from storage
 4. Select the zip file
 5. Reboot
+
+If MiPushCut was enabled, install the MiPushFramework APK after reboot so the
+normal `/data/app` package becomes the visible `com.xiaomi.xmsf` implementation.
+On systems without the stock XMSF path, the module keeps Zygisk support enabled
+but skips the system replacement. KernelSU installation cannot safely fetch or
+install a metamodule from inside this module transaction, so the prerequisite
+must be installed separately first.
 
 ## Acknowledgements
 
