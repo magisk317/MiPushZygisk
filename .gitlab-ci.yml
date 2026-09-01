@@ -27,8 +27,8 @@ variables:
   MAGISK_CI_TOOLKIT_REF: "849fb490d96bf447e2fb89624cd2dcfab1ca828a"
   MAGISK_CANCEL_OLDER_MR_PIPELINES: "true"
   CARGO_HOME: "$CI_PROJECT_DIR/.cargo"
-  ANDROID_NDK_VERSION: "r27d"
-  ANDROID_NDK_HOME: "$CI_PROJECT_DIR/.android/android-ndk-r27d"
+  ANDROID_NDK_VERSION: "r30-beta3"
+  ANDROID_NDK_HOME: "$CI_PROJECT_DIR/.android/android-ndk-r30-beta3"
 
 .configure_debian_sources: &configure_debian_sources |
   set -euo pipefail
@@ -71,7 +71,7 @@ variables:
   fi
 
 check:zygisk:
-  image: "rust:1.97.1-bookworm"
+  image: "rust:1.98.0-bookworm"
   stage: build
   rules:
     - if: '$CI_COMMIT_TAG'
@@ -110,7 +110,7 @@ check:zygisk:
       cargo check --locked
 
 .build_zygisk:
-  image: "rust:1.97.1-bookworm"
+  image: "rust:1.98.0-bookworm"
   stage: build
   rules:
     - if: '$CI_COMMIT_TAG'
