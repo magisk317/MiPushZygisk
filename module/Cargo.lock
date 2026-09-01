@@ -315,7 +315,7 @@ dependencies = [
 [[package]]
 name = "zygisk-api"
 version = "0.0.2"
-source = "git+https://gitlab.com/magisk3171/zygisk-api-rs?rev=3aadc92#3aadc929dc6175e0644070488384cc5ef09d8818"
+source = "git+https://gitlab.com/magisk3171/zygisk-api-rs?rev=8ce05efb09378ac70dd75d168cd60b2e80ac577e#8ce05efb09378ac70dd75d168cd60b2e80ac577e"
 dependencies = [
  "bitflags",
  "jni",
