@@ -1,6 +1,6 @@
 include:
   - project: magisk3171/shared/magisk-ci-toolkit
-    ref: e4c4a9105025ee4d3ba6d97733850134dc5dac37
+    ref: 849fb490d96bf447e2fb89624cd2dcfab1ca828a
     file: /.gitlab/ci/cancel-mr-pipelines.yml
 
 workflow:
@@ -24,7 +24,7 @@ stages:
 
 variables:
   GIT_DEPTH: "0"
-  MAGISK_CI_TOOLKIT_REF: "e4c4a9105025ee4d3ba6d97733850134dc5dac37"
+  MAGISK_CI_TOOLKIT_REF: "849fb490d96bf447e2fb89624cd2dcfab1ca828a"
   MAGISK_CANCEL_OLDER_MR_PIPELINES: "true"
   CARGO_HOME: "$CI_PROJECT_DIR/.cargo"
   ANDROID_NDK_VERSION: "r27d"
