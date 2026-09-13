@@ -21,7 +21,7 @@ else
   mipushcut_has_kernelsu_metamodule() { return 1; }
   mipushcut_has_replace_marker() { return 1; }
   mipushcut_cleanup_nested_product() { return 0; }
-  mipushcut_mark_image_replace() { return 1; }
+  mipushcut_mark_image_replace() { return 2; }
 fi
 
 if [ "${KSU:-false}" = "true" ]; then
@@ -57,8 +57,12 @@ if [ "${KSU:-false}" = "true" ]; then
       REPLACE="$MIPUSHCUT_REPLACE_TARGET"
       rm -f "$MODPATH/system/product/app/split-XiaomiServiceFrameworkCN/.replace" \
         "$MODPATH/product/app/split-XiaomiServiceFrameworkCN/.replace"
-      mipushcut_mark_image_replace || \
+      mipushcut_mark_image_replace && mipushcut_mark_status=0 || mipushcut_mark_status=$?
+      if [ "$mipushcut_mark_status" -eq 2 ]; then
+        ui_print "- MiPushCut: in-place metamodule detected; REPLACE marker is applied by the metamodule installer"
+      elif [ "$mipushcut_mark_status" -ne 0 ]; then
         abort "! MiPushCut could not mark the meta-overlayfs image replacement target"
+      fi
       mipushcut_save_state "$MIPUSHCUT_STATE_FILE" enabled || \
         ui_print "- Warning: could not persist MiPushCut enabled state"
       ui_print "- Stock XMSF path/APK or previous state detected; enabling MiPushCut: $MIPUSHCUT_TARGET"
