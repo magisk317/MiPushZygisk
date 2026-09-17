@@ -1,6 +1,6 @@
 id=mipush_zygisk
 name=MiPush Zygisk
-version=v1.0.1
-versionCode=12
+version=v1.0.3
+versionCode=14
 author=magisk317
 description=MiPush spoofing and MiPushCut framework hiding
