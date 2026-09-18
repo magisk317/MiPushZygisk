@@ -43,11 +43,23 @@ mipushcut_cleanup_nested_product() {
   rm -rf "$mipushcut_nested_product"
 }
 
+# Pre-mark the replacement target inside a metamodule image root.
+#
+# Only metamodules that relocate module content into a mounted image (such as
+# meta-overlayfs) expose /data/adb/metamodule/mnt/<module>. Metamodules that
+# mount module directories in place (such as meta-magic_mount-rs) have no such
+# root; for them the REPLACE marker applied by the installer's mark_replace is
+# the only mechanism and pre-marking must not be treated as a failure.
+#
+# Return codes:
+#   0 - image root present and the target was marked opaque
+#   1 - image root present but marking failed (broken xattr support)
+#   2 - no image root: in-place metamodule, nothing to pre-mark
 mipushcut_mark_image_replace() {
   mipushcut_content_root="${1:-/data/adb/metamodule/mnt/mipush_zygisk}"
   mipushcut_image_target="$mipushcut_content_root/product/app/split-XiaomiServiceFrameworkCN"
 
-  [ -d "$mipushcut_content_root" ] || return 1
+  [ -d "$mipushcut_content_root" ] || return 2
   mkdir -p "$mipushcut_image_target" || return 1
   command -v setfattr >/dev/null 2>&1 || return 1
   setfattr -n trusted.overlay.opaque -v y "$mipushcut_image_target"

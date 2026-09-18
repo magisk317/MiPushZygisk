@@ -89,7 +89,18 @@ expect_enabled "nested product cleanup succeeds" \
 expect_disabled "nested product content is removed" \
   test -e "$NESTED_CONTENT/product/product"
 
-expect_disabled "image replacement requires mounted xattr support" \
-  mipushcut_mark_image_replace "$TMP_DIR/unmounted-content"
+mipushcut_mark_image_replace "$TMP_DIR/unmounted-content" && rc=0 || rc=$?
+if [ "$rc" -ne 2 ]; then
+  echo "FAIL: missing image root must return 2 (in-place metamodule, skip)" >&2
+  exit 1
+fi
+
+IMAGE_CONTENT="$TMP_DIR/mounted-content"
+mkdir -p "$IMAGE_CONTENT"
+mipushcut_mark_image_replace "$IMAGE_CONTENT" && rc=0 || rc=$?
+if [ "$rc" -eq 2 ]; then
+  echo "FAIL: existing image root must not be reported as absent" >&2
+  exit 1
+fi
 
 echo "mipushcut guard tests passed"
