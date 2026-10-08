@@ -43,6 +43,33 @@ When installed alongside MiPushFramework:
   detected without one, installation stops with instructions to install
   `meta-overlayfs` (or another compatible metamodule) and retry
 
+### Install modes (volume keys)
+
+The installer asks for a mode with volume keys (Vol+ selects the highlighted
+option, Vol- cycles, 10s timeout takes the default):
+
+- **cut + spoof** (default) — hide stock XMSF and spoof device props
+- **cut only** — hide stock XMSF; `spoof=off` is written to app.conf and the
+  zygisk module keeps only the XMSF marker prop
+- **spoof only** — device spoofing with stock XMSF untouched
+
+The default mirrors the previous install's persisted decisions.
+
+### Shared-uid safety gate
+
+On ROMs where SystemUI runs inside the android.uid.system (uid 1000) shared
+user with stock XMSF (older MIUI/HyperOS ports), hiding the platform-signed
+stock package can flip the shared user's seinfo base to "default" — that
+seinfo has no seapp_contexts ":complete" entry and zygote aborts every
+SystemUI fork. The installer detects this coupling and requires explicit
+consent before enabling MiPushCut; unattended installs skip MiPushCut.
+
+### Boot self-heal
+
+When MiPushCut is enabled, `service.sh` samples SystemUI's persisted seinfo
+after boot. If the base flipped to "default", MiPushCut is auto-disabled in
+`mipushcut.state` and a notification is posted; the next boot recovers.
+
 ## Config
 
 Create or edit:

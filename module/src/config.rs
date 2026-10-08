@@ -38,6 +38,20 @@ pub fn observe_enabled() -> bool {
         .unwrap_or(false)
 }
 
+/// Master switch for device/build spoofing, read from the `spoof=` line in
+/// app.conf. The installer writes off for cut-only installs. Defaults to on;
+/// the XMSF marker prop (mipush.zygisk.enabled) is not affected by this.
+pub fn spoof_enabled() -> bool {
+    fs::read_to_string(CONFIG_PATH)
+        .unwrap_or_default()
+        .lines()
+        .find_map(|line| {
+            let value = line.trim().strip_prefix("spoof=")?.trim().to_owned();
+            Some(matches!(value.as_str(), "on" | "true" | "1"))
+        })
+        .unwrap_or(true)
+}
+
 #[derive(Clone, Copy)]
 pub struct SpoofProps<'a> {
     pub system_properties: &'a [(&'a str, &'a str)],

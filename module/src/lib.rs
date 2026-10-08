@@ -79,8 +79,10 @@ fn pre_specialize(
     package_name: &str,
     process_name: &str,
 ) {
+    // spoof=off (cut-only installs) keeps only the XMSF marker prop so the
+    // manager can still detect zygisk presence; all profile spoofing is off.
     let should_hook = package_name == XMSF_PACKAGE_NAME
-        || query_should_hook(&mut api, package_name, process_name);
+        || (config::spoof_enabled() && query_should_hook(&mut api, package_name, process_name));
 
     if should_hook {
         info!("spoof Xiaomi props for pkg={package_name} process={process_name}");

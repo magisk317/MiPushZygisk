@@ -104,3 +104,166 @@ if [ "$rc" -eq 2 ]; then
 fi
 
 echo "mipushcut guard tests passed"
+
+# --- spoof master switch helpers ---
+
+CONF="$TMP_DIR/app.conf"
+
+mipushcut_write_spoof_state "$CONF" off
+if [ "$(mipushcut_read_spoof_state "$CONF")" != off ]; then
+  echo "FAIL: spoof=off not persisted into a new config" >&2
+  exit 1
+fi
+
+printf 'profile=miui14\nobserve=false\nair.tv.douyu.android\n' > "$CONF"
+mipushcut_write_spoof_state "$CONF" off
+if [ "$(mipushcut_read_spoof_state "$CONF")" != off ]; then
+  echo "FAIL: spoof=off not patched into an existing config" >&2
+  exit 1
+fi
+grep -q '^profile=miui14$' "$CONF" || { echo "FAIL: profile line clobbered" >&2; exit 1; }
+grep -q '^air.tv.douyu.android$' "$CONF" || { echo "FAIL: package lines clobbered" >&2; exit 1; }
+
+mipushcut_write_spoof_state "$CONF" on
+if [ "$(mipushcut_read_spoof_state "$CONF")" != on ]; then
+  echo "FAIL: spoof=on patch failed" >&2
+  exit 1
+fi
+if [ "$(grep -c 'spoof=' "$CONF")" != 1 ]; then
+  echo "FAIL: duplicate spoof lines" >&2
+  exit 1
+fi
+
+# --- default mode resolution ---
+
+STATE_FILE="$TMP_DIR/mipushcut.state"
+rm -f "$STATE_FILE"
+printf 'spoof=off\n' >> "$CONF"
+mipushcut_save_state "$STATE_FILE" enabled
+if [ "$(mipushcut_default_mode "$STATE_FILE" "$CONF")" != cut ]; then
+  echo "FAIL: default mode should be cut (enabled + spoof=off)" >&2
+  exit 1
+fi
+mipushcut_write_spoof_state "$CONF" on
+if [ "$(mipushcut_default_mode "$STATE_FILE" "$CONF")" != both ]; then
+  echo "FAIL: default mode should be both (enabled + spoof=on)" >&2
+  exit 1
+fi
+mipushcut_save_state "$STATE_FILE" disabled
+if [ "$(mipushcut_default_mode "$STATE_FILE" "$CONF")" != spoof ]; then
+  echo "FAIL: default mode should be spoof (disabled state)" >&2
+  exit 1
+fi
+rm -f "$STATE_FILE"
+if [ "$(mipushcut_default_mode "$STATE_FILE" "$CONF")" != both ]; then
+  echo "FAIL: default mode should be both on a fresh install" >&2
+  exit 1
+fi
+
+# --- shared uid 1000 gate ---
+
+PKGLIST="$TMP_DIR/packages.list"
+printf 'com.android.systemui 1000 0 /data/user_de/0/com.android.systemui platform:privapp:targetSdkVersion=31:partition=system_ext\n' > "$PKGLIST"
+expect_enabled "systemui inside uid 1000 shared user" mipushcut_systemui_shared_uid1000 "$PKGLIST"
+
+printf 'com.android.systemui 10219 0 /data/user_de/0/com.android.systemui platform:privapp:targetSdkVersion=37:partition=system_ext\n' > "$PKGLIST"
+expect_disabled "systemui on an isolated uid" mipushcut_systemui_shared_uid1000 "$PKGLIST"
+
+expect_disabled "missing packages.list is not treated as coupled" \
+  mipushcut_systemui_shared_uid1000 "$TMP_DIR/missing_packages.list"
+
+# --- choose_mode sets the global selection (KSU capture workaround) ---
+
+rm -f "$STATE_FILE"
+unset MIPUSH_SELECTED_MODE
+mipushcut_choose_mode "$STATE_FILE" "$CONF"
+if [ "${MIPUSH_SELECTED_MODE:-}" != both ]; then
+  echo "FAIL: choose_mode must set MIPUSH_SELECTED_MODE=both on fresh install (got '${MIPUSH_SELECTED_MODE:-}')" >&2
+  exit 1
+fi
+
+mipushcut_save_state "$STATE_FILE" disabled
+mipushcut_choose_mode "$STATE_FILE" "$CONF"
+if [ "$MIPUSH_SELECTED_MODE" != spoof ]; then
+  echo "FAIL: choose_mode default should be spoof for a disabled state (got '$MIPUSH_SELECTED_MODE')" >&2
+  exit 1
+fi
+
+# --- choose_mode defaults follow persisted decisions ---
+
+mipushcut_save_state "$STATE_FILE" enabled
+printf 'spoof=off\n' > "$CONF"
+unset MIPUSH_SELECTED_MODE
+mipushcut_choose_mode "$STATE_FILE" "$CONF"
+if [ "$MIPUSH_SELECTED_MODE" != cut ]; then
+  echo "FAIL: choose_mode default should be cut (enabled + spoof=off)" >&2
+  exit 1
+fi
+rm -f "$STATE_FILE"
+mipushcut_write_spoof_state "$CONF" on
+unset MIPUSH_SELECTED_MODE
+mipushcut_choose_mode "$STATE_FILE" "$CONF"
+if [ "$MIPUSH_SELECTED_MODE" != both ]; then
+  echo "FAIL: choose_mode default should be both on fresh install" >&2
+  exit 1
+fi
+
+
+# --- both answers NO aborts the install ---
+
+abort() { exit 1; }
+mipushcut_save_state "$STATE_FILE" disabled
+printf 'spoof=off\n' >> "$CONF"
+( mipushcut_choose_mode "$STATE_FILE" "$CONF" ) 2>/dev/null && {
+  echo "FAIL: no/no must abort the install" >&2
+  exit 1
+}
+printf 'spoof=on\n' > "$CONF"
+
+
+# --- take_key return-code capture regression (Vol+ must register) ---
+# Regression for the 2026-10-07 device finding: `take_key 8 || key=$?` only
+# captures non-zero returns, so a detected Vol+ (rc=0) fell back to the
+# question default. Stub take_key with scripted return codes.
+
+mipushcut_take_key() {
+  local mipushcut_stub_rc="${MIPUSHCUT_STUB_SEQ%% *}"
+  MIPUSHCUT_STUB_SEQ="${MIPUSHCUT_STUB_SEQ#* }"
+  return "$mipushcut_stub_rc"
+}
+
+mipushcut_save_state "$STATE_FILE" disabled
+mipushcut_write_spoof_state "$CONF" off
+
+# Q1=Vol-, Q2=Vol+ (the exact device failure sequence: no then yes)
+MIPUSHCUT_STUB_SEQ="1 0 2"
+unset MIPUSH_SELECTED_MODE
+mipushcut_choose_mode "$STATE_FILE" "$CONF" 2>/dev/null
+if [ "${MIPUSH_SELECTED_MODE:-}" != spoof ]; then
+  echo "FAIL: Vol- then Vol+ must yield spoof (got '${MIPUSH_SELECTED_MODE:-}')" >&2
+  exit 1
+fi
+echo "PASS: Q1=Vol- Q2=Vol+ -> spoof (rc=0 captured)"
+
+# Q1=Vol+ with cut defaulting to no; Q2=Vol- keeps spoof=no
+MIPUSHCUT_STUB_SEQ="0 1 2"
+unset MIPUSH_SELECTED_MODE
+mipushcut_choose_mode "$STATE_FILE" "$CONF" 2>/dev/null
+if [ "${MIPUSH_SELECTED_MODE:-}" != cut ]; then
+  echo "FAIL: Vol+ then Vol- must yield cut (got '${MIPUSH_SELECTED_MODE:-}')" >&2
+  exit 1
+fi
+echo "PASS: Q1=Vol+ Q2=Vol- -> cut (rc=0 captured on Q1)"
+
+# Both Vol+ on fresh-install defaults
+MIPUSHCUT_STUB_SEQ="0 0 2"
+unset MIPUSH_SELECTED_MODE
+mipushcut_choose_mode "$STATE_FILE" "$CONF" 2>/dev/null
+if [ "${MIPUSH_SELECTED_MODE:-}" != both ]; then
+  echo "FAIL: Vol+ Vol+ must yield both (got '${MIPUSH_SELECTED_MODE:-}')" >&2
+  exit 1
+fi
+echo "PASS: Q1=Vol+ Q2=Vol+ -> both"
+
+unset -f mipushcut_take_key
+echo "take_key rc-capture regression tests passed"

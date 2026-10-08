@@ -5,7 +5,7 @@
 SKIPMOUNT=false
 PROPFILE=false
 POSTFSDATA=false
-LATESTARTSERVICE=false
+LATESTARTSERVICE=true
 
 CONFIG_DIR=/data/adb/mipush_zygisk
 CONFIG_FILE=$CONFIG_DIR/app.conf
@@ -69,7 +69,20 @@ on_install() {
     mipushcut_should_enable_with_state() { return 1; }
     mipushcut_save_state() { return 1; }
     mipushcut_has_replace_marker() { return 1; }
+    mipushcut_choose_mode() { MIPUSH_SELECTED_MODE=both; }
+    mipushcut_systemui_shared_uid1000() { return 1; }
+    mipushcut_confirm() { return 1; }
+    mipushcut_write_spoof_state() { return 0; }
   fi
+  mipushcut_start_listener 2>/dev/null || true
+  mipushcut_start_listener 2>/dev/null || true
+
+  # The picker sets MIPUSH_SELECTED_MODE globally: command substitution does
+  # not reliably capture function stdout in the KSU installer environment.
+  mipushcut_choose_mode "$MIPUSHCUT_STATE_FILE" "$CONFIG_FILE"
+  MODE=$MIPUSH_SELECTED_MODE
+  MIPUSHCUT_WANTED=false
+  case "$MODE" in cut|both) MIPUSHCUT_WANTED=true ;; esac
 
   for previous_module_path in \
     "/data/adb/modules/mipush_zygisk" \
@@ -81,19 +94,43 @@ on_install() {
     fi
   done
 
-  if mipushcut_should_enable_with_state \
-    "$MIPUSHCUT_TARGET" "$MIPUSHCUT_STATE_FILE" "$PREVIOUS_MIPUSHCUT_REPLACE"; then
+  if [ "$MIPUSHCUT_WANTED" = true ]; then
+    if ! mipushcut_should_enable_with_state \
+      "$MIPUSHCUT_TARGET" "$MIPUSHCUT_STATE_FILE" "$PREVIOUS_MIPUSHCUT_REPLACE"; then
+      ui_print "- MiPushCut 跳过: stock XMSF 路径/APK 不存在 / skipped: stock XMSF path unavailable"
+      MIPUSHCUT_WANTED=false
+    elif mipushcut_systemui_shared_uid1000; then
+      # Safety gate: on ROMs where SystemUI shares uid 1000 with stock XMSF
+      # (older MIUI/HyperOS ports), hiding the platform-signed stock package can
+      # flip the shared user's seinfo and crash-loop SystemUI. Require explicit
+      # consent; unattended installs skip MiPushCut instead.
+      ui_print "! 警告: 此 ROM 的 SystemUI 与 stock XMSF 同在 uid 1000 共享用户 / WARNING: SystemUI shares the uid 1000 shared user."
+      ui_print "! 隐藏 stock XMSF 可能翻转共享用户 seinfo 并导致 SystemUI 崩溃 / hiding stock XMSF may crash SystemUI."
+      if mipushcut_confirm 15; then
+        ui_print "! 已按要求启用 MiPushCut; 若 SystemUI seinfo 翻转, 开机自愈将自动禁用 / enabled at your request; boot self-heal will auto-disable it."
+      else
+        ui_print "- 共享组安全门禁拦截, MiPushCut 已跳过 (伪装仍生效) / skipped by the shared-uid safety gate"
+        MIPUSHCUT_WANTED=false
+      fi
+    fi
+  fi
+
+  if [ "$MIPUSHCUT_WANTED" = true ]; then
     REPLACE="$MIPUSHCUT_TARGET"
     mipushcut_save_state "$MIPUSHCUT_STATE_FILE" enabled || \
       ui_print "- Warning: could not persist MiPushCut enabled state"
-    ui_print "- Stock XMSF path/APK or previous state detected; enabling MiPushCut: $MIPUSHCUT_TARGET"
+    ui_print "- MiPushCut 已启用 (检测到 stock XMSF 或沿用先前状态) / enabled: $MIPUSHCUT_TARGET"
     # Keep the native system overlay and marker. Do not add a second bind mount.
     unzip -o "$ZIPFILE" 'defaults/*' 'bin/*' 'zygisk/*' 'system/*' -d "$MODPATH" >&2
   else
     REPLACE=''
     mipushcut_save_state "$MIPUSHCUT_STATE_FILE" disabled || \
       ui_print "- Warning: could not persist MiPushCut disabled state"
-    ui_print "- MiPushCut skipped: stock XMSF path/APK unavailable"
+    if [ "$MODE" = spoof ]; then
+      ui_print "- 只伪装模式: stock XMSF 未改动 / spoof-only: stock XMSF untouched"
+    else
+      ui_print "- MiPushCut 跳过: stock XMSF 不可用或未确认 / skipped: unavailable or declined"
+    fi
     # Zygisk and configuration files remain installed; no system replacement is extracted.
     unzip -o "$ZIPFILE" 'defaults/*' 'bin/*' 'zygisk/*' -d "$MODPATH" >&2
   fi
@@ -113,6 +150,14 @@ on_install() {
     chmod 600 "$DEVICE_CONFIG_FILE"
   fi
   migrate_legacy_device_config
+
+  # Spoof master switch follows the selected mode; cut-only disables spoofing.
+  case "$MODE" in
+    cut) mipushcut_write_spoof_state "$CONFIG_FILE" off || \
+      ui_print "- Warning: could not persist spoof=off" ;;
+    *) mipushcut_write_spoof_state "$CONFIG_FILE" on || \
+      ui_print "- Warning: could not persist spoof=on" ;;
+  esac
 
   if [ -n "$MIPUSHCUT_HELPER_TEMP" ]; then
     rm -f "$MIPUSHCUT_HELPER_TEMP"

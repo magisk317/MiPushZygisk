@@ -1,6 +1,9 @@
 id=mipush_zygisk
 name=MiPush Zygisk
-version=v1.0.3
-versionCode=14
+version=v1.0.7
+# NOTE: version/versionCode MUST follow MiPushFramework gradle/libs.versions.toml
+# (versionName/versionCode). Bump together on every framework release bump.
+# Do NOT keep a separate sequence - it was forgotten before (stuck at 15 while framework reached 17).
+versionCode=18
 author=magisk317
 description=MiPush spoofing and MiPushCut framework hiding
