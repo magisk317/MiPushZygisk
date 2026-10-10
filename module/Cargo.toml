@@ -1,7 +1,7 @@
 [package]
 name = "mipush_zygisk"
 # Keep in sync with MiPushFramework versionName; bump together on framework release bumps.
-version = "1.0.7"
+version = "1.0.8"
 edition = "2021"
 license = "GPL-3.0-only"
 
