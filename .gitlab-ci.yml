@@ -1,6 +1,6 @@
 include:
   - project: magisk3171/shared/magisk-ci-toolkit
-    ref: v1
+    ref: bff85443efd324d19204016313c7e00bb460777b
     file: /.gitlab/ci/cancel-mr-pipelines.yml
 
 workflow:
@@ -25,7 +25,7 @@ stages:
 
 variables:
   GIT_DEPTH: "0"
-  MAGISK_CI_TOOLKIT_REF: "v1"
+  MAGISK_CI_TOOLKIT_REF: "bff85443efd324d19204016313c7e00bb460777b"
   MAGISK_TELEGRAM_PIN: "off"
   MAGISK_CANCEL_OLDER_MR_PIPELINES: "true"
   # Cancel the merged MR's own merge_request_event pipeline from the push
