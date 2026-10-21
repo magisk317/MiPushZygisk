@@ -1,7 +1,14 @@
 include:
   - project: magisk3171/shared/magisk-ci-toolkit
-    ref: bff85443efd324d19204016313c7e00bb460777b
+    ref: "30dcb9c64facc024eb140a04a0f607dc07d21792"
     file: /.gitlab/ci/cancel-mr-pipelines.yml
+  # Utility-job anchor (alpine, pinned) plus the shared GitHub mirror anchor.
+  - project: magisk3171/shared/magisk-ci-toolkit
+    ref: "30dcb9c64facc024eb140a04a0f607dc07d21792"
+    file: /.gitlab/ci/utility.yml
+  - project: magisk3171/shared/magisk-ci-toolkit
+    ref: "30dcb9c64facc024eb140a04a0f607dc07d21792"
+    file: /.gitlab/ci/github-sync.yml
 
 workflow:
   auto_cancel:
@@ -25,7 +32,7 @@ stages:
 
 variables:
   GIT_DEPTH: "0"
-  MAGISK_CI_TOOLKIT_REF: "bff85443efd324d19204016313c7e00bb460777b"
+  MAGISK_CI_TOOLKIT_REF: "30dcb9c64facc024eb140a04a0f607dc07d21792"
   MAGISK_TELEGRAM_PIN: "off"
   MAGISK_CANCEL_OLDER_MR_PIPELINES: "true"
   # Cancel the merged MR's own merge_request_event pipeline from the push
@@ -237,34 +244,12 @@ cancel:older:mr:pipelines:
   extends: .magisk_cancel_older_mr_pipelines
 
 sync:github:
-  stage: sync
+  # The shared anchor owns the push: default branch plus release tags, with the
+  # internal safety-net prefixes (backup/, archive/, tmp/, wip/, keep/) withheld.
+  # It also replaces `image: alpine:latest` with the pinned utility image, so the
+  # mirror no longer depends on whatever git apk happens to install that day.
+  extends: .magisk_github_sync
   needs: []
-  image: alpine:latest
-  tags:
-    - magisk-arm64-linux
-  rules:
-    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $CI_PIPELINE_SOURCE == "push"'
-    - if: '$CI_COMMIT_TAG'
-    - when: never
-  before_script:
-    - apk add --no-cache git
-  script:
-    - |
-      set -euo pipefail
-      # GITHUB_PAT is a group-level protected variable, so it is only injected on
-      # protected refs. Tag pipelines receive it only when the tag matches a
-      # protected tag rule (v*); otherwise fall back to a project-level
-      # GITHUB_RELEASE_TOKEN when one is configured.
-      sync_token="${GITHUB_PAT:-${GITHUB_RELEASE_TOKEN:-}}"
-      if [ -z "$sync_token" ]; then
-        echo "ERROR: neither GITHUB_PAT nor GITHUB_RELEASE_TOKEN is available on $CI_COMMIT_REF_NAME (protected=$CI_COMMIT_REF_PROTECTED)" >&2
-        echo "       Make the tag match a protected tag rule (e.g. v*) so the protected group variable is injected." >&2
-        exit 1
-      fi
-      git remote add github "https://magisk317:${sync_token}@github.com/magisk317/${CI_PROJECT_NAME}.git" || true
-      if [ -n "${CI_COMMIT_TAG:-}" ]; then
-        git push github "$CI_COMMIT_TAG" --force
-        git push github --tags --force
-      else
-        git push github "HEAD:refs/heads/$CI_COMMIT_BRANCH" --force
-      fi
+  variables:
+    # Never inferred from CI_PROJECT_NAME: the GitHub name is its own contract.
+    MAGISK_GITHUB_MIRROR_REPOSITORY: "magisk317/MiPushZygisk"
