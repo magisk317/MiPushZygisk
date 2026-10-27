@@ -15,16 +15,20 @@ pub enum Profile {
 
 pub fn profile() -> Profile {
     let content = fs::read_to_string(CONFIG_PATH).unwrap_or_default();
+    profile_from(&content)
+}
+
+fn profile_from(content: &str) -> Profile {
     content
         .lines()
         .find_map(|line| {
             let value = line.trim().strip_prefix("profile=")?.trim();
             Some(match value {
-                "os4" => Profile::Os4,
-                _ => Profile::Miui14,
+                "miui14" => Profile::Miui14,
+                _ => Profile::Os4,
             })
         })
-        .unwrap_or(Profile::Miui14)
+        .unwrap_or(Profile::Os4)
 }
 
 pub fn observe_enabled() -> bool {
@@ -522,7 +526,9 @@ fn is_process_suffix(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_managed_package, is_valid_process_name, parse_device_config};
+    use super::{
+        is_managed_package, is_valid_process_name, parse_device_config, profile_from, Profile,
+    };
 
     fn find<'a>(props: &'a [(String, String)], key: &str) -> Option<&'a str> {
         props
@@ -623,6 +629,15 @@ ro.product.model=Second
     fn empty_content_yields_empty_config() {
         let config = parse_device_config("# only comments\n\n");
         assert!(config.is_empty());
+    }
+
+    #[test]
+    fn profile_defaults_to_os4() {
+        assert_eq!(profile_from(""), Profile::Os4);
+        assert_eq!(profile_from("observe=true\n"), Profile::Os4);
+        assert_eq!(profile_from("profile=miui14\n"), Profile::Miui14);
+        assert_eq!(profile_from("profile=os4\n"), Profile::Os4);
+        assert_eq!(profile_from("profile=unknown\n"), Profile::Os4);
     }
 
     #[test]
