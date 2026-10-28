@@ -1,13 +1,13 @@
 include:
   - project: magisk3171/shared/magisk-ci-toolkit
-    ref: "5a9cef57abe852dc7798664e03ad50256a0204dd"
+    ref: "f2ad0313cbf0bb12e551c94a80bdd0063dcc0411"
     file: /.gitlab/ci/cancel-mr-pipelines.yml
   # Utility-job anchor (alpine, pinned) plus the shared GitHub mirror anchor.
   - project: magisk3171/shared/magisk-ci-toolkit
-    ref: "5a9cef57abe852dc7798664e03ad50256a0204dd"
+    ref: "f2ad0313cbf0bb12e551c94a80bdd0063dcc0411"
     file: /.gitlab/ci/utility.yml
   - project: magisk3171/shared/magisk-ci-toolkit
-    ref: "5a9cef57abe852dc7798664e03ad50256a0204dd"
+    ref: "f2ad0313cbf0bb12e551c94a80bdd0063dcc0411"
     file: /.gitlab/ci/github-sync.yml
 
 workflow:
@@ -32,7 +32,7 @@ stages:
 
 variables:
   GIT_DEPTH: "0"
-  MAGISK_CI_TOOLKIT_REF: "5a9cef57abe852dc7798664e03ad50256a0204dd"
+  MAGISK_CI_TOOLKIT_REF: "f2ad0313cbf0bb12e551c94a80bdd0063dcc0411"
   MAGISK_TELEGRAM_PIN: "off"
   MAGISK_CANCEL_OLDER_MR_PIPELINES: "true"
   # Cancel the merged MR's own merge_request_event pipeline from the push
