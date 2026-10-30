@@ -1,7 +1,8 @@
 [package]
 name = "mipush_zygisk"
-# Keep in sync with MiPushFramework versionName; bump together on framework release bumps.
-version = "1.0.8"
+# Keep in sync with MiPushFramework gradle/libs.versions.toml (versionName/versionCode);
+# bump together on every framework release bump.
+version = "1.1.2"
 edition = "2021"
 license = "GPL-3.0-only"
 
@@ -12,6 +13,7 @@ crate-type = ["cdylib"]
 [dependencies]
 android_logger = "0.15"
 jni = "0.22"
+libc = "0.2"
 log = "0.4"
 zygisk-api = { git = "https://gitlab.com/magisk3171/zygisk-api-rs.git", tag = "v0.0.2" }
 

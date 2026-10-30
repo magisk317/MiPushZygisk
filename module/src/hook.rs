@@ -1,4 +1,11 @@
-use std::sync::{Mutex, OnceLock};
+use std::{
+    collections::HashSet,
+    ffi::CStr,
+    fs,
+    os::raw::{c_char, c_int, c_void},
+    ptr,
+    sync::{Mutex, OnceLock},
+};
 
 use jni::{
     objects::{JClass, JObject, JString, JValue},
@@ -88,6 +95,12 @@ static ORIG_NATIVE_GET_BOOLEAN: OnceLock<NativeGetBooleanFn> = OnceLock::new();
 static SPOOFED_SYS_PROPS: OnceLock<&'static [(&'static str, &'static str)]> = OnceLock::new();
 static OBSERVED_KEYS: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
 static HANDLES: OnceLock<Mutex<Vec<&'static str>>> = OnceLock::new();
+
+type NativePropertyGetFn = unsafe extern "C" fn(*const c_char, *mut c_char) -> c_int;
+type NativePropertyReadFn = unsafe extern "C" fn(*const c_void, *mut c_char, *mut c_char) -> c_int;
+
+static ORIG_BIONIC_PROPERTY_GET: OnceLock<NativePropertyGetFn> = OnceLock::new();
+static ORIG_BIONIC_PROPERTY_READ: OnceLock<NativePropertyReadFn> = OnceLock::new();
 
 fn observe_key(key: &str) {
     if !crate::config::observe_enabled() {
@@ -188,6 +201,142 @@ fn spoofed_value(key: &str) -> Option<&'static str> {
         .get()
         .and_then(|props| props.iter().find(|(prop, _)| *prop == key))
         .map(|(_, value)| *value)
+}
+
+fn copy_property_value(value: &str, output: *mut c_char) -> c_int {
+    if output.is_null() {
+        return 0;
+    }
+    // Android's PROP_VALUE_MAX is 92. Keep the native replacement bounded even if a future
+    // profile accidentally contains a longer value; the caller still receives a valid C string.
+    let bytes = value.as_bytes();
+    let length = bytes.len().min(91);
+    unsafe {
+        ptr::copy_nonoverlapping(bytes.as_ptr().cast::<c_char>(), output, length);
+        *output.add(length) = 0;
+    }
+    length as c_int
+}
+
+unsafe extern "C" fn my_bionic_property_get(name: *const c_char, value: *mut c_char) -> c_int {
+    if !name.is_null() {
+        let key = unsafe { CStr::from_ptr(name) }.to_str().unwrap_or_default();
+        if let Some(spoofed) = spoofed_value(key) {
+            return copy_property_value(spoofed, value);
+        }
+    }
+    ORIG_BIONIC_PROPERTY_GET
+        .get()
+        .map(|original| unsafe { original(name, value) })
+        .unwrap_or(0)
+}
+
+unsafe extern "C" fn my_bionic_property_read(
+    property: *const c_void,
+    name: *mut c_char,
+    value: *mut c_char,
+) -> c_int {
+    let result = ORIG_BIONIC_PROPERTY_READ
+        .get()
+        .map(|original| unsafe { original(property, name, value) })
+        .unwrap_or(0);
+    if result <= 0 || name.is_null() || value.is_null() {
+        return result;
+    }
+    let key = unsafe { CStr::from_ptr(name) }.to_str().unwrap_or_default();
+    if let Some(spoofed) = spoofed_value(key) {
+        return copy_property_value(spoofed, value);
+    }
+    result
+}
+
+fn parse_mapping_device(value: &str) -> Option<libc::dev_t> {
+    let (major, minor) = value.split_once(':')?;
+    let major = u32::from_str_radix(major, 16).ok()?;
+    let minor = u32::from_str_radix(minor, 16).ok()?;
+    Some(libc::makedev(major, minor))
+}
+
+fn should_hook_mapping(perms: &str, path: &str) -> bool {
+    perms.contains('x')
+        && !path.starts_with('[')
+        && (path.ends_with(".so") || path.contains(".so.") || path.ends_with(".apk"))
+}
+
+fn mapped_elf_ids() -> Vec<(libc::dev_t, libc::ino_t)> {
+    let Ok(maps) = fs::read_to_string("/proc/self/maps") else {
+        return Vec::new();
+    };
+    let mut ids = HashSet::new();
+    for line in maps.lines() {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        if fields.len() < 6 || !should_hook_mapping(fields[1], fields[5]) {
+            continue;
+        }
+        let Some(device) = parse_mapping_device(fields[3]) else {
+            continue;
+        };
+        let Ok(inode) = fields[4].parse::<libc::ino_t>() else {
+            continue;
+        };
+        if inode != 0 {
+            ids.insert((device, inode));
+        }
+    }
+    ids.into_iter().collect()
+}
+
+/// Cover native callers which bypass Java `SystemProperties.native_get*`.
+///
+/// This deliberately hooks only the platform property read APIs and only for the
+/// per-process profile already selected by MiPushZygisk. It never fabricates identifiers
+/// such as serial, IMEI, Android ID, advertising ID, MAC, account or registration tokens.
+pub fn hook_native_system_properties(api: &mut ZygiskApi<'_, V4>) {
+    let mappings = mapped_elf_ids();
+    if mappings.is_empty() {
+        debug!("native property hooks skipped: no executable ELF mappings");
+        return;
+    }
+
+    let mut registered = 0usize;
+    for (device, inode) in mappings {
+        let mut original_get: *const () = ptr::null();
+        let mut original_read: *const () = ptr::null();
+        unsafe {
+            api.plt_hook_register(
+                device,
+                inode,
+                c"__system_property_get",
+                my_bionic_property_get as *const (),
+                &mut original_get,
+            );
+            api.plt_hook_register(
+                device,
+                inode,
+                c"__system_property_read",
+                my_bionic_property_read as *const (),
+                &mut original_read,
+            );
+        }
+        if !original_get.is_null() {
+            let original: NativePropertyGetFn = unsafe { std::mem::transmute(original_get) };
+            let _ = ORIG_BIONIC_PROPERTY_GET.set(original);
+            registered += 1;
+        }
+        if !original_read.is_null() {
+            let original: NativePropertyReadFn = unsafe { std::mem::transmute(original_read) };
+            let _ = ORIG_BIONIC_PROPERTY_READ.set(original);
+            registered += 1;
+        }
+    }
+
+    match api.plt_hook_commit() {
+        Ok(()) => debug!(
+            "native property hooks committed mappings={} registrations={registered}",
+            registered
+        ),
+        Err(error) => debug!("native property hook commit failed: {error:?}"),
+    }
 }
 
 fn parse_int(value: &str) -> Option<jni::sys::jint> {
@@ -427,7 +576,12 @@ unsafe extern "C" fn my_native_get_one(
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_bool, parse_int, parse_long};
+    use std::ffi::CString;
+
+    use super::{
+        copy_property_value, parse_bool, parse_int, parse_long, parse_mapping_device,
+        should_hook_mapping,
+    };
 
     #[test]
     fn parses_typed_property_values() {
@@ -442,5 +596,28 @@ mod tests {
         assert_eq!(parse_int("V130"), None);
         assert_eq!(parse_long("picasso"), None);
         assert_eq!(parse_bool("maybe"), None);
+    }
+
+    #[test]
+    fn parses_proc_maps_device_and_filters_non_elf_entries() {
+        assert_eq!(
+            parse_mapping_device("fe:00"),
+            Some(libc::makedev(0xfe, 0x00)),
+        );
+        assert!(should_hook_mapping("r-xp", "/system/lib64/libc.so"));
+        assert!(should_hook_mapping("r-xp", "/data/app/base.apk"));
+        assert!(!should_hook_mapping("rw-p", "/system/lib64/libc.so"));
+        assert!(!should_hook_mapping("r-xp", "[vdso]"));
+    }
+
+    #[test]
+    fn bounds_native_property_values_and_terminates_them() {
+        let mut output = vec![0_i8; 128];
+        let copied = copy_property_value(&"x".repeat(200), output.as_mut_ptr());
+        assert_eq!(copied, 91);
+        assert_eq!(output[91], 0);
+
+        let key = CString::new("ro.product.brand").unwrap();
+        assert_eq!(key.to_str().unwrap(), "ro.product.brand");
     }
 }

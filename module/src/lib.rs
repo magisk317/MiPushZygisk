@@ -96,6 +96,7 @@ fn pre_specialize(
         if !props.system_properties.is_empty() {
             let unowned = unsafe { EnvUnowned::from_raw(env.get_raw()) };
             hook::hook_system_properties(&mut api, unowned, props.system_properties);
+            hook::hook_native_system_properties(&mut api);
         }
     } else {
         api.set_option(ZygiskOption::DlCloseModuleLibrary);
