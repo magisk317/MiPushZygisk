@@ -205,7 +205,8 @@ fi
 
 VERSION_CODE="${MIPUSH_ZYGISK_VERSION_CODE:-$(read_module_prop_value versionCode)}"
 if [[ -z "$VERSION_CODE" ]]; then
-    VERSION_CODE=1
+    echo "Failed to resolve version code: module.prop has no versionCode and MIPUSH_ZYGISK_VERSION_CODE is unset." >&2
+    exit 1
 fi
 if [[ ! "$VERSION_CODE" =~ ^[0-9]+$ ]]; then
     echo "Invalid version code: $VERSION_CODE" >&2
