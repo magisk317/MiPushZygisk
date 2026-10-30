@@ -25,10 +25,11 @@ fn profile_from(content: &str) -> Profile {
             let value = line.trim().strip_prefix("profile=")?.trim();
             Some(match value {
                 "miui14" => Profile::Miui14,
-                _ => Profile::Os4,
+                "os4" => Profile::Os4,
+                _ => Profile::Miui14,
             })
         })
-        .unwrap_or(Profile::Os4)
+        .unwrap_or(Profile::Miui14)
 }
 
 pub fn observe_enabled() -> bool {
@@ -632,12 +633,12 @@ ro.product.model=Second
     }
 
     #[test]
-    fn profile_defaults_to_os4() {
-        assert_eq!(profile_from(""), Profile::Os4);
-        assert_eq!(profile_from("observe=true\n"), Profile::Os4);
+    fn profile_defaults_to_miui14() {
+        assert_eq!(profile_from(""), Profile::Miui14);
+        assert_eq!(profile_from("observe=true\n"), Profile::Miui14);
         assert_eq!(profile_from("profile=miui14\n"), Profile::Miui14);
         assert_eq!(profile_from("profile=os4\n"), Profile::Os4);
-        assert_eq!(profile_from("profile=unknown\n"), Profile::Os4);
+        assert_eq!(profile_from("profile=unknown\n"), Profile::Miui14);
     }
 
     #[test]
