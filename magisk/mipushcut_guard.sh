@@ -29,6 +29,15 @@ mipushcut_has_replace_marker() {
     || [ -f "$mipushcut_module_path/product/app/split-XiaomiServiceFrameworkCN/.replace" ]
 }
 
+mipushcut_has_image_replace() {
+  mipushcut_content_root="${1:-/data/adb/metamodule/mnt/mipush_zygisk}"
+  mipushcut_image_target="$mipushcut_content_root/product/app/split-XiaomiServiceFrameworkCN"
+
+  [ -d "$mipushcut_image_target" ] || return 1
+  command -v getfattr >/dev/null 2>&1 || return 1
+  [ "$(getfattr -n trusted.overlay.opaque --only-values "$mipushcut_image_target" 2>/dev/null)" = y ]
+}
+
 mipushcut_has_kernelsu_metamodule() {
   mipushcut_metamodule_path="${1:-/data/adb/metamodule}"
 
@@ -67,6 +76,7 @@ mipushcut_mark_image_replace() {
 
 mipushcut_should_enable_with_state() {
   mipushcut_previous_replace="${3:-false}"
+  mipushcut_image_root="${4:-/data/adb/metamodule/mnt/mipush_zygisk}"
 
   # Preserve an explicit previous decision during module updates. The old
   # replacement may make the real product path temporarily invisible.
@@ -81,6 +91,9 @@ mipushcut_should_enable_with_state() {
   # .replace marker. The installer captures that marker before replacing the
   # old module directory.
   if [ "$mipushcut_previous_replace" = "true" ]; then
+    return 0
+  fi
+  if mipushcut_has_image_replace "$mipushcut_image_root"; then
     return 0
   fi
 

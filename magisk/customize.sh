@@ -12,9 +12,28 @@ MIPUSHCUT_REPLACE_TARGET=/system/product/app/split-XiaomiServiceFrameworkCN
 MIPUSHCUT_STATE_FILE=$CONFIG_DIR/mipushcut.state
 PREVIOUS_MIPUSHCUT_REPLACE=false
 REPLACE=''
+MIPUSHCUT_HELPER_TEMP=''
 
-if [ -r "$MODPATH/mipushcut_guard.sh" ]; then
-  . "$MODPATH/mipushcut_guard.sh"
+mipushcut_load_guard() {
+  if [ -r "${TMPDIR:-}/mipushcut_guard.sh" ]; then
+    . "$TMPDIR/mipushcut_guard.sh"
+    return 0
+  fi
+  if [ -r "${MODPATH:-}/mipushcut_guard.sh" ]; then
+    . "$MODPATH/mipushcut_guard.sh"
+    return 0
+  fi
+  [ -n "${ZIPFILE:-}" ] || return 1
+  MIPUSHCUT_HELPER_TEMP="${TMPDIR:-/data/local/tmp}/mipushcut_guard.$$"
+  mkdir -p "${MIPUSHCUT_HELPER_TEMP%/*}" 2>/dev/null || return 1
+  if ! unzip -p "$ZIPFILE" mipushcut_guard.sh > "$MIPUSHCUT_HELPER_TEMP" 2>/dev/null; then
+    MIPUSHCUT_HELPER_TEMP=''
+    return 1
+  fi
+  . "$MIPUSHCUT_HELPER_TEMP"
+}
+
+if mipushcut_load_guard; then
   # Listen from the very first line: presses during the (UI-lagged)
   # extraction phase must be captured for the mode prompts.
   mipushcut_start_listener
@@ -57,8 +76,11 @@ if [ "${KSU:-false}" = "true" ]; then
       fi
     done
 
-    if ! mipushcut_should_enable_with_state \
-      "$MIPUSHCUT_TARGET" "$MIPUSHCUT_STATE_FILE" "$PREVIOUS_MIPUSHCUT_REPLACE"; then
+    # An explicit cut/both selection is authoritative: an already-cut image
+    # intentionally has no stock APK path, so the safety probe must not undo it.
+    if [ "$MODE" != cut ] && [ "$MODE" != both ] \
+      && ! mipushcut_should_enable_with_state \
+        "$MIPUSHCUT_TARGET" "$MIPUSHCUT_STATE_FILE" "$PREVIOUS_MIPUSHCUT_REPLACE"; then
       ui_print "- MiPushCut 跳过: stock XMSF 路径/APK 不存在 / skipped: stock XMSF path unavailable"
       MIPUSHCUT_WANTED=false
     elif mipushcut_systemui_shared_uid1000; then
@@ -101,6 +123,9 @@ if [ "${KSU:-false}" = "true" ]; then
     rmdir "$MODPATH/system/product/app" "$MODPATH/system/product" "$MODPATH/system" \
       "$MODPATH/product/app" "$MODPATH/product" 2>/dev/null || true
     [ "$MODE" = spoof ] && ui_print "- 只伪装模式: stock XMSF 未改动 / spoof-only: stock XMSF untouched"
+  fi
+  if [ -n "$MIPUSHCUT_HELPER_TEMP" ]; then
+    rm -f "$MIPUSHCUT_HELPER_TEMP"
   fi
 fi
 

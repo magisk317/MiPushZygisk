@@ -74,6 +74,14 @@ mkdir -p "$OLD_PRODUCT_MODULE_DIR/product/app/split-XiaomiServiceFrameworkCN"
 expect_enabled "legacy product marker is detected" \
   mipushcut_has_replace_marker "$OLD_PRODUCT_MODULE_DIR"
 
+IMAGE_REPLACE_ROOT="$TMP_DIR/image-replace"
+mipushcut_has_image_replace() {
+  [ "${1:-}" = "$IMAGE_REPLACE_ROOT" ]
+}
+expect_enabled "metamodule image replacement preserves old cut state" \
+  mipushcut_should_enable_with_state "$TARGET" "$STATE_FILE" false "$IMAGE_REPLACE_ROOT"
+unset -f mipushcut_has_image_replace
+
 expect_disabled "KernelSU metamodule is absent" \
   mipushcut_has_kernelsu_metamodule "$TMP_DIR/missing-metamodule"
 
