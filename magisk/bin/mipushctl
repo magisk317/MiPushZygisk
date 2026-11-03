@@ -1,58 +1,161 @@
 #!/system/bin/sh
 
+umask 077
 CONFIG_DIR=/data/adb/mipush_zygisk
 CONFIG=$CONFIG_DIR/app.conf
+STATE_FILE=$CONFIG_DIR/mipushcut.state
+INSTALL_MODE_FILE=$CONFIG_DIR/install_mode
+REBOOT_REQUIRED_FILE=$CONFIG_DIR/reboot_required
+MODULE_DIR=/data/adb/modules/mipush_zygisk
 MAX_SCAN=512
+SELF_PACKAGES='com.xiaomi.xmsf io.github.magisk317.mipush'
+MIPUSH_ACTION='com.xiaomi.mipush.RECEIVE_MESSAGE'
 
-die() { echo "mipushctl: $*" >&2; exit 1; }
+die() { printf 'mipushctl: %s\n' "$*" >&2; exit 1; }
 ensure() { [ -f "$CONFIG" ] || die "configuration is missing: $CONFIG"; }
 valid_pkg() {
-    # Keep CLI validation limited to package syntax; native Zygisk accepts
-    # explicitly configured vendor packages as well.
-    echo "$1" | grep -Eq '^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$'
+    printf '%s\n' "$1" | grep -Eq '^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$'
 }
-
+is_self_package() {
+    case " $SELF_PACKAGES " in
+        *" $1 "*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+read_meta() {
+    key=$1
+    awk -F= -v key="$key" '$1 == key { value=$2 } END { print value }' "$CONFIG"
+}
 set_meta() {
     key=$1 value=$2 tmp=$CONFIG_DIR/app.conf.tmp.$$
     ensure
     grep -v "^${key}=" "$CONFIG" > "$tmp" || true
     printf '%s=%s\n' "$key" "$value" >> "$tmp"
-    chmod 600 "$tmp" && mv "$tmp" "$CONFIG"
+    chmod 600 "$tmp" && mv "$tmp" "$CONFIG" || {
+        rm -f "$tmp"
+        return 1
+    }
 }
-
 rule() {
-    prefix=$1 entry=$2
+    prefix=$1 entry=$2 tmp=$CONFIG_DIR/app.conf.tmp.$$
     ensure
-    # Replace both forms so enabling a package also removes an older deny rule.
-    awk -v entry="$entry" '$0 != entry && $0 != "-" entry {print}' \
-        "$CONFIG" > "$CONFIG_DIR/app.conf.tmp.$$"
-    printf '%s%s\n' "$prefix" "$entry" >> "$CONFIG_DIR/app.conf.tmp.$$"
-    chmod 600 "$CONFIG_DIR/app.conf.tmp.$$" && mv "$CONFIG_DIR/app.conf.tmp.$$" "$CONFIG"
+    awk -v entry="$entry" '$0 != entry && $0 != "-" entry {print}' "$CONFIG" > "$tmp"
+    printf '%s%s\n' "$prefix" "$entry" >> "$tmp"
+    chmod 600 "$tmp" && mv "$tmp" "$CONFIG" || {
+        rm -f "$tmp"
+        return 1
+    }
 }
-
-scan() {
+force_stop() {
+    command -v am >/dev/null 2>&1 && am force-stop "$1" >/dev/null 2>&1
+}
+set_install_mode() {
+    mode=$1 tmp=$INSTALL_MODE_FILE.tmp.$$
+    case "$mode" in cut|spoof|both) ;; *) die 'mode must be cut, spoof, or both' ;; esac
+    mkdir -p "$CONFIG_DIR"
+    printf '%s\n' "$mode" > "$tmp"
+    chmod 600 "$tmp" && mv "$tmp" "$INSTALL_MODE_FILE" || {
+        rm -f "$tmp"
+        return 1
+    }
+}
+print_status() {
     ensure
-    command -v dumpsys >/dev/null 2>&1 || die "dumpsys unavailable"
+    module_enabled=true
+    [ -d "$MODULE_DIR" ] || module_enabled=false
+    [ -f "$MODULE_DIR/disable" ] && module_enabled=false
+    [ -f "$MODULE_DIR/remove" ] && module_enabled=false
+    cut_active=$(cat "$STATE_FILE" 2>/dev/null || printf disabled)
+    [ "$cut_active" = enabled ] || cut_active=disabled
+    spoof=$(read_meta spoof)
+    [ "$spoof" = off ] || spoof=on
+    profile=$(read_meta profile)
+    case "$profile" in miui14|os4) ;; *) profile=miui14 ;; esac
+    observe=$(read_meta observe)
+    [ "$observe" = true ] || observe=false
+    pending_mode=$(cat "$INSTALL_MODE_FILE" 2>/dev/null || true)
+    case "$pending_mode" in cut|spoof|both) ;; *) pending_mode= ;; esac
+    reboot_required=false
+    [ -f "$REBOOT_REQUIRED_FILE" ] && reboot_required=true
+    device_override=false
+    [ -s "$CONFIG_DIR/device.conf" ] && device_override=true
+    printf 'module_enabled=%s\n' "$module_enabled"
+    printf 'cut_active=%s\n' "$cut_active"
+    printf 'spoof=%s\n' "$spoof"
+    printf 'profile=%s\n' "$profile"
+    printf 'observe=%s\n' "$observe"
+    printf 'device_override=%s\n' "$device_override"
+    printf 'pending_mode=%s\n' "$pending_mode"
+    printf 'reboot_required=%s\n' "$reboot_required"
+}
+print_rules() {
+    ensure
+    awk '!/^(profile|observe|spoof|auto_scan)=/ && /^[A-Za-z-]/ {print}' "$CONFIG"
+}
+scan_by_intent() {
+    cmd package query-receivers --components -a "$MIPUSH_ACTION" 2>/dev/null | cut -d/ -f1
+}
+scan_by_dumpsys() {
     count=0
-    # Keep the loop in this shell; a piped while loop runs in a child shell on
-    # Android and would make MAX_SCAN ineffective.
     for pkg in $(pm list packages 2>/dev/null | sed 's/^package://'); do
         [ "$count" -lt "$MAX_SCAN" ] || break
         valid_pkg "$pkg" || continue
-        if dumpsys package "$pkg" 2>/dev/null | grep -Eq 'com.xiaomi.push.service|XMPushService'; then
-            echo "$pkg"
+        if dumpsys package "$pkg" 2>/dev/null | grep -Eq 'com\.xiaomi\.push\.service|XMPushService'; then
+            printf '%s\n' "$pkg"
         fi
         count=$((count + 1))
     done
 }
+emit_candidates() {
+    while IFS= read -r pkg; do
+        valid_pkg "$pkg" || continue
+        is_self_package "$pkg" && continue
+        printf '%s\n' "$pkg"
+    done | sort -u
+}
+scan() {
+    ensure
+    tmp=$CONFIG_DIR/scan.tmp.$$
+    : > "$tmp" || die "cannot write $tmp"
+    if command -v cmd >/dev/null 2>&1; then
+        scan_by_intent > "$tmp"
+    fi
+    if [ ! -s "$tmp" ]; then
+        command -v pm >/dev/null 2>&1 || { rm -f "$tmp"; die 'package enumeration unavailable'; }
+        command -v dumpsys >/dev/null 2>&1 || { rm -f "$tmp"; die 'package enumeration unavailable'; }
+        scan_by_dumpsys > "$tmp"
+    fi
+    emit_candidates < "$tmp"
+    rm -f "$tmp"
+}
 
 case "${1:-}" in
-    list|apps) ensure; sed -n '/^[A-Za-z]/p' "$CONFIG";;
-    app|app-status) pkg=${2:-}; valid_pkg "$pkg" || die "invalid package"; grep -F -x "$pkg" "$CONFIG" >/dev/null && echo enabled || echo disabled;;
-    enable) pkg=${2:-}; valid_pkg "$pkg" || die "invalid package"; rule '' "$pkg"; echo "enabled $pkg";;
-    disable) pkg=${2:-}; valid_pkg "$pkg" || die "invalid package"; rule '-' "$pkg"; echo "denied $pkg";;
-    profile) case "${2:-}" in miui14|os4) set_meta profile "$2"; echo "profile=$2";; *) echo "miui14 os4"; exit 1;; esac;;
-    observe) set_meta observe "${2:-true}"; echo "observe=${2:-true}";;
-    scan) scan;;
-    *) echo "usage: mipushctl {list|apps|app PKG|enable PKG|disable PKG|profile [miui14|os4]|observe [true|false]|scan}" >&2; exit 2;;
+    status) print_status ;;
+    list|apps) print_rules ;;
+    app|app-status) pkg=${2:-}; valid_pkg "$pkg" || die 'invalid package'; grep -F -x "$pkg" "$CONFIG" >/dev/null && printf enabled || printf disabled ;;
+    enable)
+        pkg=${2:-}; valid_pkg "$pkg" || die 'invalid package'
+        rule '' "$pkg"
+        if force_stop "$pkg"; then printf 'enabled %s\n' "$pkg"; else die "enabled $pkg but force-stop failed"; fi
+        ;;
+    disable)
+        pkg=${2:-}; valid_pkg "$pkg" || die 'invalid package'
+        rule '-' "$pkg"
+        if force_stop "$pkg"; then printf 'disabled %s\n' "$pkg"; else die "disabled $pkg but force-stop failed"; fi
+        ;;
+    profile)
+        case "${2:-}" in
+            miui14|os4) set_meta profile "$2"; : > "$REBOOT_REQUIRED_FILE"; printf 'profile=%s\n' "$2" ;;
+            *) printf 'miui14 os4\n'; exit 1 ;;
+        esac
+        ;;
+    observe)
+        case "${2:-}" in true|false) set_meta observe "$2"; printf 'observe=%s\n' "$2" ;; *) die 'observe must be true or false' ;; esac
+        ;;
+    spoof)
+        case "${2:-}" in on|off) set_meta spoof "$2"; : > "$REBOOT_REQUIRED_FILE"; printf 'spoof=%s\n' "$2" ;; *) die 'spoof must be on or off' ;; esac
+        ;;
+    mode) set_install_mode "${2:-}"; printf 'pending_mode=%s\n' "$2" ;;
+    scan) scan ;;
+    *) printf 'usage: mipushctl {status|apps|app PKG|enable PKG|disable PKG|profile [miui14|os4]|observe [true|false]|spoof [on|off]|mode [cut|spoof|both]|scan}\n' >&2; exit 2 ;;
 esac
