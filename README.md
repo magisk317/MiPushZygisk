@@ -43,17 +43,23 @@ When installed alongside MiPushFramework:
   detected without one, installation stops with instructions to install
   `meta-overlayfs` (or another compatible metamodule) and retry
 
-### Install modes (volume keys)
+### Install modes
 
-The installer asks for a mode with volume keys (Vol+ selects the highlighted
-option, Vol- cycles, 10s timeout takes the default):
+The installer does not read volume keys. It applies a valid
+`/data/adb/mipush_zygisk/install_mode` preset (`cut`, `spoof`, or `both`), then
+clears the preset after a successful install. Without a preset, upgrades keep
+the previous persisted decisions and a fresh install defaults to `both`.
 
 - **cut + spoof** (default) — hide stock XMSF and spoof device props
 - **cut only** — hide stock XMSF; `spoof=off` is written to app.conf and the
   zygisk module keeps only the XMSF marker prop
 - **spoof only** — device spoofing with stock XMSF untouched
 
-The default mirrors the previous install's persisted decisions.
+KernelSU exposes the module `webroot` as its configuration page. Per-app,
+profile, observe, and spoof settings are applied through `mipushctl`; per-app
+changes force-stop the target application. MiPushCut mode changes only prepare
+the next install because REPLACE and metamodule state cannot be hot-applied.
+Magisk/APatch users can invoke the same CLI from a root shell.
 
 ### Shared-uid safety gate
 

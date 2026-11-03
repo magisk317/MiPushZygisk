@@ -71,12 +71,8 @@ on_install() {
     mipushcut_has_replace_marker() { return 1; }
     mipushcut_choose_mode() { MIPUSH_SELECTED_MODE=both; }
     mipushcut_systemui_shared_uid1000() { return 1; }
-    mipushcut_confirm() { return 1; }
     mipushcut_write_spoof_state() { return 0; }
   fi
-  mipushcut_start_listener 2>/dev/null || true
-  mipushcut_start_listener 2>/dev/null || true
-
   # The picker sets MIPUSH_SELECTED_MODE globally: command substitution does
   # not reliably capture function stdout in the KSU installer environment.
   mipushcut_choose_mode "$MIPUSHCUT_STATE_FILE" "$CONFIG_FILE"
@@ -97,7 +93,7 @@ on_install() {
   if [ "$MIPUSHCUT_WANTED" = true ]; then
     if ! mipushcut_should_enable_with_state \
       "$MIPUSHCUT_TARGET" "$MIPUSHCUT_STATE_FILE" "$PREVIOUS_MIPUSHCUT_REPLACE"; then
-      ui_print "- MiPushCut 跳过: stock XMSF 路径/APK 不存在 / skipped: stock XMSF path unavailable"
+      ui_print "- 精简模块跳过: stock XMSF 路径/APK 不存在 / skipped: stock XMSF path unavailable"
       MIPUSHCUT_WANTED=false
     elif mipushcut_systemui_shared_uid1000; then
       # Safety gate: on ROMs where SystemUI shares uid 1000 with stock XMSF
@@ -106,10 +102,10 @@ on_install() {
       # consent; unattended installs skip MiPushCut instead.
       ui_print "! 警告: 此 ROM 的 SystemUI 与 stock XMSF 同在 uid 1000 共享用户 / WARNING: SystemUI shares the uid 1000 shared user."
       ui_print "! 隐藏 stock XMSF 可能翻转共享用户 seinfo 并导致 SystemUI 崩溃 / hiding stock XMSF may crash SystemUI."
-      if mipushcut_confirm 15; then
-        ui_print "! 已按要求启用 MiPushCut; 若 SystemUI seinfo 翻转, 开机自愈将自动禁用 / enabled at your request; boot self-heal will auto-disable it."
+      if mipushcut_preserve_existing_cut "$MIPUSHCUT_STATE_FILE" "$PREVIOUS_MIPUSHCUT_REPLACE"; then
+        ui_print "- 保留已有精简模块状态 / preserving existing slim module state"
       else
-        ui_print "- 共享组安全门禁拦截, MiPushCut 已跳过 (伪装仍生效) / skipped by the shared-uid safety gate"
+        ui_print "- 共享组安全门禁拦截, 精简模块已跳过 (伪装仍生效) / skipped by the shared-uid safety gate"
         MIPUSHCUT_WANTED=false
       fi
     fi
@@ -118,21 +114,21 @@ on_install() {
   if [ "$MIPUSHCUT_WANTED" = true ]; then
     REPLACE="$MIPUSHCUT_TARGET"
     mipushcut_save_state "$MIPUSHCUT_STATE_FILE" enabled || \
-      ui_print "- Warning: could not persist MiPushCut enabled state"
-    ui_print "- MiPushCut 已启用 (检测到 stock XMSF 或沿用先前状态) / enabled: $MIPUSHCUT_TARGET"
+      ui_print "- Warning: could not persist slim module enabled state"
+    ui_print "- 精简模块已启用 (检测到 stock XMSF 或沿用先前状态) / enabled: $MIPUSHCUT_TARGET"
     # Keep the native system overlay and marker. Do not add a second bind mount.
-    unzip -o "$ZIPFILE" 'defaults/*' 'bin/*' 'zygisk/*' 'system/*' -d "$MODPATH" >&2
+    unzip -o "$ZIPFILE" 'defaults/*' 'bin/*' 'webroot/*' 'zygisk/*' 'system/*' -d "$MODPATH" >&2
   else
     REPLACE=''
     mipushcut_save_state "$MIPUSHCUT_STATE_FILE" disabled || \
-      ui_print "- Warning: could not persist MiPushCut disabled state"
+      ui_print "- Warning: could not persist slim module disabled state"
     if [ "$MODE" = spoof ]; then
       ui_print "- 只伪装模式: stock XMSF 未改动 / spoof-only: stock XMSF untouched"
     else
-      ui_print "- MiPushCut 跳过: stock XMSF 不可用或未确认 / skipped: unavailable or declined"
+      ui_print "- 精简模块跳过: stock XMSF 不可用或未确认 / skipped: unavailable or declined"
     fi
     # Zygisk and configuration files remain installed; no system replacement is extracted.
-    unzip -o "$ZIPFILE" 'defaults/*' 'bin/*' 'zygisk/*' -d "$MODPATH" >&2
+    unzip -o "$ZIPFILE" 'defaults/*' 'bin/*' 'webroot/*' 'zygisk/*' -d "$MODPATH" >&2
   fi
 
   for target in $REPLACE; do
@@ -158,6 +154,7 @@ on_install() {
     *) mipushcut_write_spoof_state "$CONFIG_FILE" on || \
       ui_print "- Warning: could not persist spoof=on" ;;
   esac
+  rm -f "$CONFIG_DIR/install_mode"
 
   if [ -n "$MIPUSHCUT_HELPER_TEMP" ]; then
     rm -f "$MIPUSHCUT_HELPER_TEMP"

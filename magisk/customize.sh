@@ -34,9 +34,7 @@ mipushcut_load_guard() {
 }
 
 if mipushcut_load_guard; then
-  # Listen from the very first line: presses during the (UI-lagged)
-  # extraction phase must be captured for the mode prompts.
-  mipushcut_start_listener
+  :
 else
   mipushcut_should_enable_with_state() { return 1; }
   mipushcut_save_state() { return 1; }
@@ -46,7 +44,6 @@ else
   mipushcut_mark_image_replace() { return 2; }
   mipushcut_choose_mode() { MIPUSH_SELECTED_MODE=both; }
   mipushcut_systemui_shared_uid1000() { return 1; }
-  mipushcut_confirm() { return 1; }
   mipushcut_write_spoof_state() { return 0; }
 fi
 
@@ -81,7 +78,7 @@ if [ "${KSU:-false}" = "true" ]; then
     if [ "$MODE" != cut ] && [ "$MODE" != both ] \
       && ! mipushcut_should_enable_with_state \
         "$MIPUSHCUT_TARGET" "$MIPUSHCUT_STATE_FILE" "$PREVIOUS_MIPUSHCUT_REPLACE"; then
-      ui_print "- MiPushCut 跳过: stock XMSF 路径/APK 不存在 / skipped: stock XMSF path unavailable"
+      ui_print "- 精简模块跳过: stock XMSF 路径/APK 不存在 / skipped: stock XMSF path unavailable"
       MIPUSHCUT_WANTED=false
     elif mipushcut_systemui_shared_uid1000; then
       # Safety gate: on ROMs where SystemUI shares uid 1000 with stock XMSF
@@ -90,10 +87,10 @@ if [ "${KSU:-false}" = "true" ]; then
       # consent; unattended installs skip MiPushCut instead.
       ui_print "! 警告: 此 ROM 的 SystemUI 与 stock XMSF 同在 uid 1000 共享用户 / WARNING: SystemUI shares the uid 1000 shared user."
       ui_print "! 隐藏 stock XMSF 可能翻转共享用户 seinfo 并导致 SystemUI 崩溃 / hiding stock XMSF may crash SystemUI."
-      if mipushcut_confirm 15; then
-        ui_print "! 已按要求启用 MiPushCut; 若 SystemUI seinfo 翻转, 开机自愈将自动禁用 / enabled at your request; boot self-heal will auto-disable it."
+      if mipushcut_preserve_existing_cut "$MIPUSHCUT_STATE_FILE" "$PREVIOUS_MIPUSHCUT_REPLACE"; then
+        ui_print "- 保留已有精简模块状态 / preserving existing slim module state"
       else
-        ui_print "- 共享组安全门禁拦截, MiPushCut 已跳过 (伪装仍生效) / skipped by the shared-uid safety gate"
+        ui_print "- 共享组安全门禁拦截, 精简模块已跳过 (伪装仍生效) / skipped by the shared-uid safety gate"
         MIPUSHCUT_WANTED=false
       fi
     fi
@@ -107,17 +104,17 @@ if [ "${KSU:-false}" = "true" ]; then
       "$MODPATH/product/app/split-XiaomiServiceFrameworkCN/.replace"
     mipushcut_mark_image_replace && mipushcut_mark_status=0 || mipushcut_mark_status=$?
     if [ "$mipushcut_mark_status" -eq 2 ]; then
-      ui_print "- MiPushCut: in-place metamodule detected; REPLACE marker is applied by the metamodule installer"
+      ui_print "- Slim module: in-place metamodule detected; REPLACE marker is applied by the metamodule installer"
     elif [ "$mipushcut_mark_status" -ne 0 ]; then
       abort "! MiPushCut could not mark the meta-overlayfs image replacement target"
     fi
     mipushcut_save_state "$MIPUSHCUT_STATE_FILE" enabled || \
-      ui_print "- Warning: could not persist MiPushCut enabled state"
-    ui_print "- MiPushCut 已启用 / enabled: $MIPUSHCUT_TARGET"
+      ui_print "- Warning: could not persist slim module enabled state"
+    ui_print "- 精简模块已启用 / enabled: $MIPUSHCUT_TARGET"
   else
     REPLACE=''
     mipushcut_save_state "$MIPUSHCUT_STATE_FILE" disabled || \
-      ui_print "- Warning: could not persist MiPushCut disabled state"
+      ui_print "- Warning: could not persist slim module disabled state"
     rm -rf "$MODPATH/system/product/app/split-XiaomiServiceFrameworkCN"
     rm -f "$MODPATH/product/app/split-XiaomiServiceFrameworkCN/.replace"
     rmdir "$MODPATH/system/product/app" "$MODPATH/system/product" "$MODPATH/system" \
@@ -142,6 +139,7 @@ if [ ! -f "$DEVICE_CONFIG_FILE" ] && [ -f "$DEFAULT_DEVICE_CONFIG" ]; then
   chmod 600 "$DEVICE_CONFIG_FILE"
 fi
 
+
 # Spoof master switch follows the selected mode; cut-only disables spoofing.
 case "$MODE" in
   cut) mipushcut_write_spoof_state "$CONFIG_FILE" off || \
@@ -149,3 +147,5 @@ case "$MODE" in
   *) mipushcut_write_spoof_state "$CONFIG_FILE" on || \
     ui_print "- Warning: could not persist spoof=on" ;;
 esac
+rm -f "$CONFIG_DIR/install_mode"
+chmod 0755 "$MODPATH/bin/mipushctl" "$MODPATH/post-fs-data.sh" "$MODPATH/service.sh" 2>/dev/null || true

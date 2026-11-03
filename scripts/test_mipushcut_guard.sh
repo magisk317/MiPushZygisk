@@ -217,61 +217,29 @@ if [ "$MIPUSH_SELECTED_MODE" != both ]; then
 fi
 
 
-# --- both answers NO aborts the install ---
-
-abort() { exit 1; }
-mipushcut_save_state "$STATE_FILE" disabled
-printf 'spoof=off\n' >> "$CONF"
-( mipushcut_choose_mode "$STATE_FILE" "$CONF" ) 2>/dev/null && {
-  echo "FAIL: no/no must abort the install" >&2
-  exit 1
-}
-printf 'spoof=on\n' > "$CONF"
-
-
-# --- take_key return-code capture regression (Vol+ must register) ---
-# Regression for the 2026-10-07 device finding: `take_key 8 || key=$?` only
-# captures non-zero returns, so a detected Vol+ (rc=0) fell back to the
-# question default. Stub take_key with scripted return codes.
-
-mipushcut_take_key() {
-  local mipushcut_stub_rc="${MIPUSHCUT_STUB_SEQ%% *}"
-  MIPUSHCUT_STUB_SEQ="${MIPUSHCUT_STUB_SEQ#* }"
-  return "$mipushcut_stub_rc"
-}
-
-mipushcut_save_state "$STATE_FILE" disabled
-mipushcut_write_spoof_state "$CONF" off
-
-# Q1=Vol-, Q2=Vol+ (the exact device failure sequence: no then yes)
-MIPUSHCUT_STUB_SEQ="1 0 2"
+# --- preset mode selection replaces the old volume-key prompts ---
+rm -f "$STATE_FILE"
+printf 'cut\n' > "$TMP_DIR/install_mode"
 unset MIPUSH_SELECTED_MODE
-mipushcut_choose_mode "$STATE_FILE" "$CONF" 2>/dev/null
-if [ "${MIPUSH_SELECTED_MODE:-}" != spoof ]; then
-  echo "FAIL: Vol- then Vol+ must yield spoof (got '${MIPUSH_SELECTED_MODE:-}')" >&2
-  exit 1
-fi
-echo "PASS: Q1=Vol- Q2=Vol+ -> spoof (rc=0 captured)"
-
-# Q1=Vol+ with cut defaulting to no; Q2=Vol- keeps spoof=no
-MIPUSHCUT_STUB_SEQ="0 1 2"
-unset MIPUSH_SELECTED_MODE
-mipushcut_choose_mode "$STATE_FILE" "$CONF" 2>/dev/null
+mipushcut_choose_mode "$STATE_FILE" "$CONF"
 if [ "${MIPUSH_SELECTED_MODE:-}" != cut ]; then
-  echo "FAIL: Vol+ then Vol- must yield cut (got '${MIPUSH_SELECTED_MODE:-}')" >&2
+  echo "FAIL: valid install_mode preset must select cut" >&2
   exit 1
 fi
-echo "PASS: Q1=Vol+ Q2=Vol- -> cut (rc=0 captured on Q1)"
-
-# Both Vol+ on fresh-install defaults
-MIPUSHCUT_STUB_SEQ="0 0 2"
+printf 'invalid\n' > "$TMP_DIR/install_mode"
+printf 'spoof=on\n' > "$CONF"
 unset MIPUSH_SELECTED_MODE
-mipushcut_choose_mode "$STATE_FILE" "$CONF" 2>/dev/null
+mipushcut_choose_mode "$STATE_FILE" "$CONF"
 if [ "${MIPUSH_SELECTED_MODE:-}" != both ]; then
-  echo "FAIL: Vol+ Vol+ must yield both (got '${MIPUSH_SELECTED_MODE:-}')" >&2
+  echo "FAIL: invalid preset must fall back to fresh-install both" >&2
   exit 1
 fi
-echo "PASS: Q1=Vol+ Q2=Vol+ -> both"
+rm -f "$TMP_DIR/install_mode"
+mipushcut_save_state "$STATE_FILE" disabled
+mipushcut_choose_mode "$STATE_FILE" "$CONF"
+if [ "${MIPUSH_SELECTED_MODE:-}" != spoof ]; then
+  echo "FAIL: persisted disabled state must select spoof" >&2
+  exit 1
+fi
 
-unset -f mipushcut_take_key
-echo "take_key rc-capture regression tests passed"
+echo "noninteractive mode selection tests passed"

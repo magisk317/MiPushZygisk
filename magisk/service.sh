@@ -41,11 +41,11 @@ mipushcut_selfheal() {
   printf 'disabled\n' > "$STATE_FILE.tmp" && mv -f "$STATE_FILE.tmp" "$STATE_FILE"
   chmod 600 "$STATE_FILE" 2>/dev/null || true
   {
-    echo "$(date '+%Y-%m-%d %H:%M:%S') systemui seinfo='$mipushcut_seinfo' (default base); MiPushCut disabled for the next boot"
+    echo "$(date '+%Y-%m-%d %H:%M:%S') systemui seinfo='$mipushcut_seinfo' (default base); 精简模块已为下次启动关闭"
   } >> "$LOG_FILE"
   chmod 600 "$LOG_FILE" 2>/dev/null || true
   cmd notification post -S bigtext -t "MiPush Zygisk" mipushcut_selfheal \
-    "MiPushCut auto-disabled: SystemUI seinfo flipped to default; reboot to recover" \
+    "精简模块已自动关闭：SystemUI seinfo 已变为 default，请重启恢复" \
     >/dev/null 2>&1 || true
 }
 

@@ -188,169 +188,28 @@ mipushcut_ui_print() {
   fi
 }
 
-# Wait for a volume key press, following the canonical Volume-Key-Selector
-# pattern (Magisk-Modules-Repo/HideNavBar): getevent runs in the background
-# writing to a file, the caller polls the file every 0.5s. This keeps the
-# installer stdout free and never blocks on a pipe. Returns 0 = Vol+,
-# 1 = Vol-, 2 = timeout or no input device (blind install).
-# Start the volume-key listener for the whole install (90s). Keys pressed
-# while extraction/UI lag is still running must be captured too: KSU install
-# output is delayed and reordered, so the user cannot see when a prompt
-# window opens - listening must start before anything else.
-mipushcut_start_listener() {
-  MIPUSHCUT_EVFILE=''
-  command -v getevent >/dev/null 2>&1 || { mipushcut_ui_print "- ! getevent 不可用 unavailable"; return 1; }
-  command -v timeout >/dev/null 2>&1 || { mipushcut_ui_print "- ! timeout 不可用 unavailable"; return 1; }
-  local mipushcut_cand
-  for mipushcut_cand in "${TMPDIR:-}" /data/local/tmp /data/adb/mipush_zygisk /tmp; do
-    [ -n "$mipushcut_cand" ] || continue
-    if : > "$mipushcut_cand/mipushcut_events" 2>/dev/null; then
-      MIPUSHCUT_EVFILE="$mipushcut_cand/mipushcut_events"
-      break
-    fi
-  done
-  [ -n "$MIPUSHCUT_EVFILE" ] || { mipushcut_ui_print "- ! 无可写事件文件 no writable events file"; return 1; }
-  : > "$MIPUSHCUT_EVFILE"
-  # Stream the whole window (no -c 1: a stray first event must not end the
-  # listener before the volume key arrives).
-  # -s KILL: after the install ends the installer cgroup freezes the orphaned
-  # listener; a plain SIGTERM is queued but never delivered, so getevent
-  # lingered forever. SIGKILL works on frozen processes.
-  timeout -s KILL 90 getevent -lq > "$MIPUSHCUT_EVFILE" 2>&1 &
-  return 0
+# Resolve the install mode without reading input devices. A valid preset is
+# written by the root CLI/WebUI; otherwise preserve the previous persisted mode.
+mipushcut_preserve_existing_cut() {
+  mipushcut_state_is_enabled "${1:-}" || [ "${2:-false}" = true ]
 }
 
-# Count DOWN occurrences of a key pattern in the event stream. The running
-# getevent holds the file open with its own write offset, so truncating the
-# file between questions corrupts the stream (new events land after a NUL
-# hole). Questions instead diff occurrence counts.
-mipushcut_count_keys() {
-  local n
-  n=$(grep -c "$1" "${MIPUSHCUT_EVFILE:-}" 2>/dev/null)
-  [ -n "$n" ] || n=0
-  echo "$n"
-}
-
-# Wait up to $1 seconds for the next volume key in the stream.
-# Returns 0 = Vol+, 1 = Vol-, 2 = nothing captured.
-mipushcut_take_key() {
-  [ -n "${MIPUSHCUT_EVFILE:-}" ] || return 2
-  local base_up="${MIPUSHCUT_BASE_UP:-0}" base_down="${MIPUSHCUT_BASE_DOWN:-0}"
-  local count=0 up down
-  while [ $count -lt $(($1 * 2)) ]; do
-    sleep 0.5
-    count=$((count + 1))
-    up=$(mipushcut_count_keys 'KEY_VOLUMEUP *DOWN')
-    down=$(mipushcut_count_keys 'KEY_VOLUMEDOWN *DOWN')
-    [ "$up" -gt "$base_up" ] && return 0
-    [ "$down" -gt "$base_down" ] && return 1
-  done
-  local mipushcut_debug_n
-  mipushcut_debug_n=$(wc -l < "${MIPUSHCUT_EVFILE:-}" 2>/dev/null || echo '?')
-  mipushcut_ui_print "- ! debug: 未捕获按键 events_lines=$mipushcut_debug_n"
-  return 2
-}
-
-# Yes/no prompt. Timeout defaults to NO so unattended installs stay safe.
-mipushcut_confirm() {
-  MIPUSHCUT_BASE_UP=$(mipushcut_count_keys 'KEY_VOLUMEUP *DOWN')
-  MIPUSHCUT_BASE_DOWN=$(mipushcut_count_keys 'KEY_VOLUMEDOWN *DOWN')
-  mipushcut_ui_print "- 音量+ Vol+ = 是 YES"
-  mipushcut_ui_print "- 音量- Vol- = 否 NO"
-  mipushcut_ui_print "- 超时 timeout ${1:-10}s = NO"
-  mipushcut_take_key "${1:-10}"
-  [ "$?" = 0 ]
-}
-
-# Interactive install mode picker. Sets the global MIPUSH_SELECTED_MODE to
-# cut|spoof|both. KSU install output is not reliably visible while the
-# installer blocks (the metamodule delays/reorders customize.sh output), so
-# the prompts are two blind yes/no questions with direct key mapping instead
-# of a cycling menu:
-#   Q1 enable MiPushCut?  Q2 enable device spoof?
-#   Vol+ = yes, Vol- = no; no key within the window keeps the question's
-#   default, which mirrors the previous install's persisted decision.
-# /data/adb/mipush_zygisk/install_mode (cut|spoof|both) overrides both
-# prompts and skips the interaction entirely.
 mipushcut_choose_mode() {
-  MIPUSH_SELECTED_MODE=both
-  local mipushcut_mode_file="${1%/*}/install_mode"
-  if [ -f "$mipushcut_mode_file" ]; then
-    local mipushcut_preset
-    mipushcut_preset=$(cat "$mipushcut_mode_file" 2>/dev/null)
-    case "$mipushcut_preset" in
+  local mode_file="${1%/*}/install_mode"
+  local preset
+  if [ -f "$mode_file" ]; then
+    preset=$(tr -d '\r\n' < "$mode_file" 2>/dev/null)
+    case "$preset" in
       cut|spoof|both)
-        MIPUSH_SELECTED_MODE=$mipushcut_preset
-        mipushcut_ui_print "- 预置模式 preset install_mode: $MIPUSH_SELECTED_MODE"
+        MIPUSH_SELECTED_MODE=$preset
+        mipushcut_ui_print "- 预置安装模式 / preset install_mode: $MIPUSH_SELECTED_MODE"
         return 0
+        ;;
+      *)
+        mipushcut_ui_print "- ! 忽略无效 install_mode / invalid preset: $preset"
         ;;
     esac
   fi
-
-  local mipushcut_cut=yes mipushcut_spoof=yes
-  if mipushcut_state_is_disabled "${1:-}"; then
-    mipushcut_cut=no
-  fi
-  if [ "$(mipushcut_read_spoof_state "${2:-}")" = off ]; then
-    mipushcut_spoof=no
-  fi
-
-  mipushcut_ui_print "- ========= 模式选择 mode ========="
-
-  mipushcut_ui_print "- Q1: 启用精简 MiPushCut?"
-  mipushcut_ui_print "-  (隐藏 stock XMSF)"
-  mipushcut_ui_print "- 音量+ Vol+ = 是 YES"
-  mipushcut_ui_print "- 音量- Vol- = 否 NO"
-  mipushcut_ui_print "- 无按键 no key = $mipushcut_cut"
-  mipushcut_ui_print "- (8s)"
-  MIPUSHCUT_BASE_UP=0
-  MIPUSHCUT_BASE_DOWN=0
-  # take_key returns 0 (Vol+) / 1 (Vol-) / 2 (timeout). A plain `cmd || key=$?`
-  # only captures non-zero returns, so a detected Vol+ silently fell back to
-  # the question default. Capture all three return codes explicitly.
-  if mipushcut_take_key 8; then
-    mipushcut_key=0
-  else
-    mipushcut_key=$?
-  fi
-  [ "$mipushcut_key" = 1 ] && mipushcut_cut=no
-  [ "$mipushcut_key" = 0 ] && mipushcut_cut=yes
-  # Q2 diffs against the counts as of now: only NEW presses count.
-  MIPUSHCUT_BASE_UP=$(mipushcut_count_keys 'KEY_VOLUMEUP *DOWN')
-  MIPUSHCUT_BASE_DOWN=$(mipushcut_count_keys 'KEY_VOLUMEDOWN *DOWN')
-  mipushcut_ui_print "- -> MiPushCut: $mipushcut_cut"
-
-  mipushcut_ui_print "- Q2: 启用伪装 device spoof?"
-  mipushcut_ui_print "- 音量+ Vol+ = 是 YES"
-  mipushcut_ui_print "- 音量- Vol- = 否 NO"
-  mipushcut_ui_print "- 无按键 no key = $mipushcut_spoof"
-  mipushcut_ui_print "- (8s)"
-  # take_key returns 0 (Vol+) / 1 (Vol-) / 2 (timeout). A plain `cmd || key=$?`
-  # only captures non-zero returns, so a detected Vol+ silently fell back to
-  # the question default. Capture all three return codes explicitly.
-  if mipushcut_take_key 8; then
-    mipushcut_key=0
-  else
-    mipushcut_key=$?
-  fi
-  [ "$mipushcut_key" = 1 ] && mipushcut_spoof=no
-  [ "$mipushcut_key" = 0 ] && mipushcut_spoof=yes
-  mipushcut_ui_print "- -> spoof: $mipushcut_spoof"
-
-  if [ "$mipushcut_cut" = no ] && [ "$mipushcut_spoof" = no ]; then
-    # Both answers NO = nothing enabled: abort instead of silently installing
-    # a module that does nothing (the picker default must not leak through).
-    abort "! 精简与伪装均未选择 / both MiPushCut and spoof answered NO - nothing to install. 重刷 reflash 并至少启用一项."
-  fi
-  if [ "$mipushcut_cut" = yes ] && [ "$mipushcut_spoof" = yes ]; then
-    MIPUSH_SELECTED_MODE=both
-  elif [ "$mipushcut_cut" = yes ]; then
-    MIPUSH_SELECTED_MODE=cut
-  elif [ "$mipushcut_spoof" = yes ]; then
-    MIPUSH_SELECTED_MODE=spoof
-  fi
-  mipushcut_ui_print "- ========= 结果 result ========="
-  mipushcut_ui_print "- 精简 cut: $mipushcut_cut"
-  mipushcut_ui_print "- 伪装 spoof: $mipushcut_spoof"
-  mipushcut_ui_print "- 已选模式 mode: $MIPUSH_SELECTED_MODE"
+  MIPUSH_SELECTED_MODE=$(mipushcut_default_mode "${1:-}" "${2:-}")
+  mipushcut_ui_print "- 使用已保存安装模式 / persisted install mode: $MIPUSH_SELECTED_MODE"
 }

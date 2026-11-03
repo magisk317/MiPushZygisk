@@ -8,4 +8,4 @@ version=v1.1.3
 # scripts/check_zygisk_version_sync.sh, which no longer skips the comparison.
 versionCode=22
 author=magisk317
-description=MiPush spoofing and MiPushCut framework hiding
+description=MiPush spoofing and slim module framework hiding
