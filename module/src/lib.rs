@@ -79,15 +79,28 @@ fn pre_specialize(
     package_name: &str,
     process_name: &str,
 ) {
-    // spoof=off (cut-only installs) keeps only the XMSF marker prop so the
-    // manager can still detect zygisk presence; all profile spoofing is off.
+    let runtime_config = if package_name == XMSF_PACKAGE_NAME {
+        None
+    } else {
+        query_runtime_config(&mut api, package_name, process_name)
+    };
     let should_hook = package_name == XMSF_PACKAGE_NAME
-        || (config::spoof_enabled() && query_should_hook(&mut api, package_name, process_name));
+        || runtime_config
+            .as_ref()
+            .is_some_and(|config| config.should_hook);
 
     if should_hook {
         info!("spoof Xiaomi props for pkg={package_name} process={process_name}");
 
-        let props = config::get_properties_for_package(package_name);
+        let profile = runtime_config
+            .as_ref()
+            .map_or(config::Profile::Miui14, |config| {
+                config::Profile::from_wire(config.profile)
+            });
+        let device_config = runtime_config
+            .as_ref()
+            .and_then(|config| std::str::from_utf8(&config.device_config).ok());
+        let props = config::get_properties_for_package(package_name, profile, device_config);
 
         if !props.build_properties.is_empty() || !props.build_version_properties.is_empty() {
             hook::hook_build(env, props.build_properties, props.build_version_properties);
@@ -95,26 +108,42 @@ fn pre_specialize(
 
         if !props.system_properties.is_empty() {
             let unowned = unsafe { EnvUnowned::from_raw(env.get_raw()) };
-            hook::hook_system_properties(&mut api, unowned, props.system_properties);
-            hook::hook_native_system_properties(&mut api);
+            hook::hook_system_properties(
+                &mut api,
+                unowned,
+                props.system_properties,
+                runtime_config.as_ref().is_some_and(|config| config.observe),
+            );
         }
     } else {
         api.set_option(ZygiskOption::DlCloseModuleLibrary);
     }
 }
 
-fn query_should_hook(api: &mut ZygiskApi<'_, V4>, package_name: &str, process_name: &str) -> bool {
+fn query_runtime_config(
+    api: &mut ZygiskApi<'_, V4>,
+    package_name: &str,
+    process_name: &str,
+) -> Option<protocol::RuntimeConfig> {
     let result = api.with_companion(|stream| send_query(stream, package_name, process_name));
     match result {
-        Ok(should_hook) => should_hook,
+        Ok(Ok(config)) => Some(config),
+        Ok(Err(err)) => {
+            error!("companion query failed: {err:?}");
+            None
+        }
         Err(err) => {
             error!("companion unavailable: {err:?}");
-            false
+            None
         }
     }
 }
 
-fn send_query(stream: &mut UnixStream, package_name: &str, process_name: &str) -> bool {
+fn send_query(
+    stream: &mut UnixStream,
+    package_name: &str,
+    process_name: &str,
+) -> std::io::Result<protocol::RuntimeConfig> {
     if let Err(err) = protocol::configure(stream).and_then(|_| {
         protocol::write_frame(
             stream,
@@ -123,9 +152,9 @@ fn send_query(stream: &mut UnixStream, package_name: &str, process_name: &str) -
         )
     }) {
         error!("send companion query failed: {err}");
-        return false;
+        return Err(err);
     }
-    match protocol::read_frame(stream).and_then(|(kind, payload)| {
+    protocol::read_frame(stream).and_then(|(kind, payload)| {
         if kind != protocol::RESPONSE {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
@@ -133,13 +162,7 @@ fn send_query(stream: &mut UnixStream, package_name: &str, process_name: &str) -
             ));
         }
         protocol::decode_response(&payload)
-    }) {
-        Ok(result) => result,
-        Err(err) => {
-            error!("read companion response failed: {err}");
-            false
-        }
-    }
+    })
 }
 
 register_module!(MiPushZygiskModule);

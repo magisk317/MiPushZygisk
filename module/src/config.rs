@@ -1,6 +1,3 @@
-use std::fs;
-use std::sync::OnceLock;
-
 pub const CONFIG_PATH: &str = "/data/adb/mipush_zygisk/app.conf";
 
 pub const DEVICE_CONFIG_PATH: &str = "/data/adb/mipush_zygisk/device.conf";
@@ -13,12 +10,23 @@ pub enum Profile {
     Os4,
 }
 
-pub fn profile() -> Profile {
-    let content = fs::read_to_string(CONFIG_PATH).unwrap_or_default();
-    profile_from(&content)
+impl Profile {
+    pub fn to_wire(self) -> u8 {
+        match self {
+            Self::Miui14 => 0,
+            Self::Os4 => 1,
+        }
+    }
+
+    pub fn from_wire(value: u8) -> Self {
+        match value {
+            1 => Self::Os4,
+            _ => Self::Miui14,
+        }
+    }
 }
 
-fn profile_from(content: &str) -> Profile {
+pub fn profile_from(content: &str) -> Profile {
     content
         .lines()
         .find_map(|line| {
@@ -32,23 +40,18 @@ fn profile_from(content: &str) -> Profile {
         .unwrap_or(Profile::Miui14)
 }
 
-pub fn observe_enabled() -> bool {
-    fs::read_to_string(CONFIG_PATH)
-        .ok()
-        .and_then(|content| {
-            content
-                .lines()
-                .find_map(|line| line.trim().strip_prefix("observe=")?.parse().ok())
-        })
+pub fn observe_enabled_from(content: &str) -> bool {
+    content
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("observe=")?.parse().ok())
         .unwrap_or(false)
 }
 
 /// Master switch for device/build spoofing, read from the `spoof=` line in
 /// app.conf. The installer writes off for cut-only installs. Defaults to on;
 /// the XMSF marker prop (mipush.zygisk.enabled) is not affected by this.
-pub fn spoof_enabled() -> bool {
-    fs::read_to_string(CONFIG_PATH)
-        .unwrap_or_default()
+pub fn spoof_enabled_from(content: &str) -> bool {
+    content
         .lines()
         .find_map(|line| {
             let value = line.trim().strip_prefix("spoof=")?.trim().to_owned();
@@ -230,24 +233,6 @@ enum Section {
     PackageBuildVersion(usize),
 }
 
-/// Load and cache device.conf. Returns `None` when the file is missing,
-/// unreadable, or yields no usable properties so callers fall back to
-/// the selected profile. Parsed once per process; cached for later hooks.
-fn device_config() -> Option<&'static DeviceConfig> {
-    static CONFIG: OnceLock<Option<DeviceConfig>> = OnceLock::new();
-    CONFIG
-        .get_or_init(|| {
-            let content = fs::read_to_string(DEVICE_CONFIG_PATH).ok()?;
-            let parsed = parse_device_config(&content);
-            if parsed.is_empty() {
-                None
-            } else {
-                Some(parsed)
-            }
-        })
-        .as_ref()
-}
-
 fn parse_device_config(content: &str) -> DeviceConfig {
     let mut config = DeviceConfig {
         global: PropSet::default(),
@@ -355,7 +340,11 @@ fn merge_section(
     Box::leak(out.into_boxed_slice())
 }
 
-pub fn get_properties_for_package(pkg: &str) -> SpoofProps<'static> {
+pub fn get_properties_for_package(
+    pkg: &str,
+    profile: Profile,
+    device_config_content: Option<&str>,
+) -> SpoofProps<'static> {
     if let Some(entry) = PACKAGE_PROPS.iter().find(|p| p.package_name == pkg) {
         return SpoofProps {
             system_properties: entry.system_properties,
@@ -364,10 +353,15 @@ pub fn get_properties_for_package(pkg: &str) -> SpoofProps<'static> {
         };
     }
 
-    let base = profile_defaults(profile());
-    let Some(config) = device_config() else {
+    let base = profile_defaults(profile);
+    let Some(content) = device_config_content else {
         return base;
     };
+    let parsed = parse_device_config(content);
+    if parsed.is_empty() {
+        return base;
+    }
+    let config: &'static DeviceConfig = Box::leak(Box::new(parsed));
 
     let patch = config
         .packages
@@ -528,7 +522,8 @@ fn is_process_suffix(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        is_managed_package, is_valid_process_name, parse_device_config, profile_from, Profile,
+        is_managed_package, is_valid_process_name, parse_device_config, profile_from,
+        spoof_enabled_from, Profile,
     };
 
     fn find<'a>(props: &'a [(String, String)], key: &str) -> Option<&'a str> {
@@ -639,6 +634,13 @@ ro.product.model=Second
         assert_eq!(profile_from("profile=miui14\n"), Profile::Miui14);
         assert_eq!(profile_from("profile=os4\n"), Profile::Os4);
         assert_eq!(profile_from("profile=unknown\n"), Profile::Miui14);
+    }
+
+    #[test]
+    fn spoof_master_switch_defaults_on_and_parses_off() {
+        assert!(spoof_enabled_from(""));
+        assert!(spoof_enabled_from("profile=os4\nspoof=on\n"));
+        assert!(!spoof_enabled_from("profile=os4\nspoof=off\n"));
     }
 
     #[test]

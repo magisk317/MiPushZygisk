@@ -4,11 +4,30 @@ use std::time::Duration;
 
 pub const MAGIC: [u8; 4] = *b"MPZK";
 pub const VERSION: u16 = 1;
-pub const MAX_FRAME: u32 = 4096;
+pub const MAX_FRAME: u32 = 16 * 1024;
 pub const QUERY: u16 = 1;
 pub const RESPONSE: u16 = 2;
 pub const STATUS_OK: u8 = 0;
 pub const STATUS_REJECTED: u8 = 1;
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct RuntimeConfig {
+    pub should_hook: bool,
+    pub profile: u8,
+    pub observe: bool,
+    pub device_config: Vec<u8>,
+}
+
+impl RuntimeConfig {
+    pub fn disabled() -> Self {
+        Self {
+            should_hook: false,
+            profile: 0,
+            observe: false,
+            device_config: Vec::new(),
+        }
+    }
+}
 
 pub fn configure(stream: &UnixStream) -> io::Result<()> {
     stream.set_read_timeout(Some(Duration::from_secs(2)))?;
@@ -76,20 +95,53 @@ pub fn decode_query(payload: &[u8]) -> io::Result<(&str, &str)> {
     Ok((package, process))
 }
 
-pub fn encode_response(should_hook: bool) -> Vec<u8> {
-    vec![if should_hook {
+pub fn encode_response(config: &RuntimeConfig) -> Vec<u8> {
+    let mut payload = Vec::with_capacity(7 + config.device_config.len());
+    payload.push(if config.should_hook {
         STATUS_OK
     } else {
         STATUS_REJECTED
-    }]
+    });
+    payload.push(config.profile);
+    payload.push(config.observe as u8);
+    payload.extend_from_slice(&(config.device_config.len() as u32).to_be_bytes());
+    payload.extend_from_slice(&config.device_config);
+    payload
 }
 
-pub fn decode_response(payload: &[u8]) -> io::Result<bool> {
-    match payload {
-        [STATUS_OK] => Ok(true),
-        [STATUS_REJECTED] => Ok(false),
-        _ => Err(io::Error::new(io::ErrorKind::InvalidData, "bad response")),
+pub fn decode_response(payload: &[u8]) -> io::Result<RuntimeConfig> {
+    if payload.len() < 7 {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "short response"));
     }
+    let should_hook = match payload[0] {
+        STATUS_OK => true,
+        STATUS_REJECTED => false,
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "bad response status",
+            ))
+        }
+    };
+    if payload[2] > 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "bad observe flag",
+        ));
+    }
+    let length = u32::from_be_bytes([payload[3], payload[4], payload[5], payload[6]]) as usize;
+    if length > MAX_FRAME as usize - 7 || payload.len() != 7 + length {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "bad config length",
+        ));
+    }
+    Ok(RuntimeConfig {
+        should_hook,
+        profile: payload[1],
+        observe: payload[2] != 0,
+        device_config: payload[7..].to_vec(),
+    })
 }
 
 #[cfg(test)]
@@ -103,6 +155,17 @@ mod tests {
             decode_query(&encoded).unwrap(),
             ("com.example.app", "com.example.app:push")
         );
+    }
+
+    #[test]
+    fn response_round_trip() {
+        let config = RuntimeConfig {
+            should_hook: true,
+            profile: 1,
+            observe: true,
+            device_config: b"[system]\nMODEL=Test\n".to_vec(),
+        };
+        assert_eq!(decode_response(&encode_response(&config)).unwrap(), config);
     }
 
     #[test]

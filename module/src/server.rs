@@ -20,7 +20,7 @@ pub fn companion_handler(stream: &mut UnixStream) {
         let _ = crate::protocol::write_frame(
             stream,
             crate::protocol::RESPONSE,
-            &crate::protocol::encode_response(false),
+            &crate::protocol::encode_response(&crate::protocol::RuntimeConfig::disabled()),
         );
     }
 }
@@ -35,26 +35,51 @@ fn handle_query(stream: &mut UnixStream) -> io::Result<()> {
     }
     let (package_name, process_name) = crate::protocol::decode_query(&payload)?;
 
-    let should_hook = check_config(package_name, process_name)?;
-    debug!("query pkg={package_name} process={process_name} should_hook={should_hook}");
+    let config = check_config(package_name, process_name)?;
+    debug!(
+        "query pkg={package_name} process={process_name} should_hook={}",
+        config.should_hook
+    );
 
     crate::protocol::write_frame(
         stream,
         crate::protocol::RESPONSE,
-        &crate::protocol::encode_response(should_hook),
+        &crate::protocol::encode_response(&config),
     )?;
 
     Ok(())
 }
 
-fn check_config(package_name: &str, process_name: &str) -> io::Result<bool> {
+fn check_config(
+    package_name: &str,
+    process_name: &str,
+) -> io::Result<crate::protocol::RuntimeConfig> {
     let content = match fs::read_to_string(crate::config::CONFIG_PATH) {
         Ok(content) => content,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => String::new(),
+        Err(err) => return Err(err),
+    };
+    let device_config = match fs::read(crate::config::DEVICE_CONFIG_PATH) {
+        Ok(content) => content,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Vec::new(),
         Err(err) => return Err(err),
     };
 
-    Ok(resolve_rule(&content, package_name, process_name))
+    Ok(crate::protocol::RuntimeConfig {
+        should_hook: resolve_config(&content, package_name, process_name),
+        profile: crate::config::profile_from(&content).to_wire(),
+        observe: crate::config::observe_enabled_from(&content),
+        device_config,
+    })
+}
+
+fn resolve_config(content: &str, package_name: &str, process_name: &str) -> bool {
+    if package_name != crate::config::XMSF_PACKAGE_NAME
+        && !crate::config::spoof_enabled_from(content)
+    {
+        return false;
+    }
+    resolve_rule(content, package_name, process_name)
 }
 
 fn resolve_rule(content: &str, package_name: &str, process_name: &str) -> bool {
@@ -127,7 +152,7 @@ fn matches_line(line: &str, package_name: &str, process_name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{matches_line, resolve_rule};
+    use super::{matches_line, resolve_config, resolve_rule};
 
     #[test]
     fn package_only_matches_all_processes() {
@@ -168,6 +193,20 @@ mod tests {
             "com.android.settings",
             "com.android.settings",
             "com.android.settings"
+        ));
+    }
+
+    #[test]
+    fn spoof_off_disables_managed_package_rules() {
+        assert!(!resolve_config(
+            "spoof=off\ncom.example.app\n",
+            "com.example.app",
+            "com.example.app",
+        ));
+        assert!(resolve_config(
+            "spoof=on\ncom.example.app\n",
+            "com.example.app",
+            "com.example.app",
         ));
     }
 
