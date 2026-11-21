@@ -1,10 +1,5 @@
-# MiPush SELinux rules
-# Allow system_server to write mipush properties through property_service (Android 17 default_prop / system_prop hardening)
+# MiPushFramework readiness property
+# Keep the rule limited to the system_server publisher. Reader domains retain their
+# platform property-read policy; granting every untrusted app access to all system
+# properties would widen the module security boundary unnecessarily.
 allow system_server default_prop property_service set
-allow system_server system_prop property_service set
-
-# Allow untrusted app domains (including com.xiaomi.xmsf and manager) to read default_prop and system_prop
-allow untrusted_app default_prop file { read getattr open map }
-allow untrusted_app_all default_prop file { read getattr open map }
-allow untrusted_app system_prop file { read getattr open map }
-allow untrusted_app_all system_prop file { read getattr open map }
